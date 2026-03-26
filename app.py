@@ -140,7 +140,11 @@ r = pr["results"]
 risk = s.get("risk_summary", {})
 
 # ── Summary metrics bar ──
-st.markdown(f"### {pr['project_name']}")
+st.markdown(f"""<div style="background:#2C2C2A;color:white;padding:14px 20px;border-radius:10px;margin-bottom:16px;
+    display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;">
+    <span style="font-size:20px;font-weight:600;">{pr['project_name']}</span>
+    <span style="font-size:12px;color:#D3D1C7;">BA Workflow Assistant · 12 Agents · {pr['domain']}</span>
+</div>""", unsafe_allow_html=True)
 c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
 c1.metric("Stakeholders", s["stakeholders"])
 c2.metric("Requirements", s["requirements"])
@@ -196,11 +200,39 @@ with tabs[0]:
 #  TAB 1: REQUIREMENTS
 # ══════════════════════════════════════════════════════════════════════════════
 with tabs[1]:
-    st.subheader("BRD — 3 Audience Views — KA3 Task 4.4")
+    st.subheader("Business Requirements Document — KA3 Task 4.4")
     a04 = r.get("A04", {})
     reqs = a04.get("requirements", [])
 
-    # Requirements with audience views
+    # Executive Summary
+    exec_sum = a04.get("executive_summary", {})
+    if exec_sum:
+        st.markdown("#### Executive Summary")
+        st.markdown(f"""<div style="background:#f0f4f8;border-left:4px solid #185FA5;padding:14px 18px;border-radius:0 8px 8px 0;margin-bottom:16px;">
+            <div style="font-size:18px;font-weight:600;color:#185FA5;margin-bottom:8px;">{exec_sum.get('project_name', pr['project_name'])}</div>
+            <div style="font-size:13px;margin-bottom:8px;">{exec_sum.get('purpose', '')}</div>
+            <div style="font-size:12px;color:#555;"><b>Business Drivers:</b> {', '.join(exec_sum.get('business_drivers', []))}</div>
+            <div style="font-size:12px;color:#555;"><b>Expected Outcomes:</b> {', '.join(exec_sum.get('expected_outcomes', []))}</div>
+            <div style="font-size:12px;color:#555;"><b>Target Users:</b> {', '.join(exec_sum.get('target_users', []))}</div>
+        </div>""", unsafe_allow_html=True)
+        if exec_sum.get("regulatory_context"):
+            st.warning(f"**Regulatory Context:** {exec_sum.get('regulatory_context')}")
+
+    # Business Objectives
+    objectives = a04.get("business_objectives", [])
+    if objectives:
+        st.markdown("#### Business Objectives — KA4 Task 5.1")
+        st.dataframe([{
+            "ID": o.get("id"), "Objective": o.get("objective"),
+            "Success Metric": o.get("success_metric"),
+            "Priority": o.get("priority", "?").upper(),
+            "Linked Reqs": ", ".join(o.get("linked_requirement_ids", [])),
+        } for o in objectives if isinstance(o, dict)], use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # Functional Requirements with audience views
+    st.markdown("#### Functional Requirements — 3 Audience Views")
     for req in reqs:
         priority = req.get("priority_suggestion", "?")
         color_map = {"must": "🔴", "should": "🟠", "could": "🔵", "wont": "⚪"}
@@ -210,6 +242,9 @@ with tabs[1]:
             st.markdown(f"**Full requirement:** {req.get('text', '')}")
             st.markdown(f"**Acceptance criteria:** {req.get('acceptance_criteria', 'N/A')}")
             st.markdown(f"**Source:** {req.get('source_stakeholder', 'N/A')}")
+            linked_objs = req.get("linked_objective_ids", [])
+            if linked_objs:
+                st.markdown(f"**Supports objectives:** {', '.join(linked_objs)}")
 
             reg_flags = req.get("ls_regulatory_flags", [])
             if reg_flags:
@@ -291,6 +326,19 @@ with tabs[1]:
                         "Validation": a.get("validation_rules"), "Sample": a.get("sample_value")
                     } for a in attrs if isinstance(a, dict)], use_container_width=True, hide_index=True)
                 st.divider()
+
+    # Dependencies
+    dependencies = a04.get("dependencies", [])
+    if dependencies:
+        with st.expander(f"Dependencies ({len(dependencies)})"):
+            st.dataframe([{
+                "ID": d.get("id"), "Type": d.get("type"),
+                "Description": d.get("description"),
+                "Linked Reqs": ", ".join(d.get("dependent_requirement_ids", [])),
+                "Owner": d.get("owner"),
+                "Status": d.get("status", "?").upper(),
+                "Risk if Unresolved": d.get("risk_if_unresolved"),
+            } for d in dependencies if isinstance(d, dict)], use_container_width=True, hide_index=True)
 
     # Open questions
     openqs = a04.get("open_questions", [])
