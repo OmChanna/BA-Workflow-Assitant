@@ -31,6 +31,144 @@ def get_client(api_key: str) -> OpenAI:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  SECTION 1B: DOCUMENT PARSING + CONTEXT MATCHING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def extract_text_from_file(uploaded_file) -> dict:
+    """Extract text from uploaded file. Returns {filename, text, file_type, success, error}."""
+    filename = uploaded_file.name
+    file_bytes = uploaded_file.read()
+    uploaded_file.seek(0)  # reset for potential re-read
+    
+    result = {"filename": filename, "text": "", "file_type": "", "success": False, "error": None}
+    
+    try:
+        if filename.lower().endswith(".txt"):
+            result["text"] = file_bytes.decode("utf-8", errors="replace")
+            result["file_type"] = "TXT"
+            result["success"] = True
+            
+        elif filename.lower().endswith(".pdf"):
+            try:
+                import PyPDF2
+                import io
+                reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+                pages = []
+                for page in reader.pages:
+                    pages.append(page.extract_text() or "")
+                result["text"] = "\n\n".join(pages)
+                result["file_type"] = "PDF"
+                result["success"] = True
+            except ImportError:
+                result["error"] = "PyPDF2 not installed. Add PyPDF2 to requirements.txt."
+            except Exception as e:
+                result["error"] = f"PDF parsing failed: {str(e)}"
+                
+        elif filename.lower().endswith((".xlsx", ".xls")):
+            try:
+                import openpyxl
+                import io
+                wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+                sheets_text = []
+                for sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    rows = []
+                    for row in ws.iter_rows(values_only=True):
+                        row_vals = [str(c) if c is not None else "" for c in row]
+                        if any(v.strip() for v in row_vals):
+                            rows.append(" | ".join(row_vals))
+                    if rows:
+                        sheets_text.append(f"[Sheet: {sheet_name}]\n" + "\n".join(rows))
+                result["text"] = "\n\n".join(sheets_text)
+                result["file_type"] = "Excel"
+                result["success"] = True
+            except ImportError:
+                result["error"] = "openpyxl not installed. Add openpyxl to requirements.txt."
+            except Exception as e:
+                result["error"] = f"Excel parsing failed: {str(e)}"
+                
+        elif filename.lower().endswith(".docx"):
+            try:
+                import docx
+                import io
+                doc = docx.Document(io.BytesIO(file_bytes))
+                paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+                # Also extract tables
+                for table in doc.tables:
+                    for row in table.rows:
+                        row_text = " | ".join(cell.text.strip() for cell in row.cells)
+                        if row_text.strip():
+                            paragraphs.append(row_text)
+                result["text"] = "\n".join(paragraphs)
+                result["file_type"] = "Word"
+                result["success"] = True
+            except ImportError:
+                result["error"] = "python-docx not installed. Add python-docx to requirements.txt."
+            except Exception as e:
+                result["error"] = f"Word parsing failed: {str(e)}"
+                
+        elif filename.lower().endswith(".csv"):
+            text = file_bytes.decode("utf-8", errors="replace")
+            result["text"] = text
+            result["file_type"] = "CSV"
+            result["success"] = True
+            
+        else:
+            # Try as plain text
+            try:
+                result["text"] = file_bytes.decode("utf-8", errors="replace")
+                result["file_type"] = "Text"
+                result["success"] = True
+            except Exception:
+                result["error"] = f"Unsupported file type: {filename}"
+    except Exception as e:
+        result["error"] = f"File processing failed: {str(e)}"
+    
+    return result
+
+
+def check_context_match(api_key: str, brief_text: str, document_texts: list[dict]) -> dict:
+    """Check if uploaded documents are contextually aligned with the brief.
+    Returns {aligned: bool, warnings: [str], summary: str}."""
+    if not document_texts:
+        return {"aligned": True, "warnings": [], "summary": "No documents to check."}
+    
+    doc_summaries = []
+    for dt in document_texts:
+        # Take first 500 chars of each doc for context comparison
+        preview = dt["text"][:500] if dt.get("text") else ""
+        doc_summaries.append(f"[{dt['filename']} ({dt['file_type']})]: {preview}")
+    
+    system_prompt = """You are a context-matching assistant. Given a project brief and uploaded documents,
+determine if the documents are contextually related to the brief.
+
+Respond in valid JSON with:
+- aligned: true if documents are related to the brief's domain/project, false if clearly unrelated
+- warnings: list of specific mismatches or concerns (empty if fully aligned)
+- summary: one sentence describing the relationship
+
+Be practical — documents don't need to match exactly. Flag only clear mismatches
+(e.g., a healthcare brief with a financial services document)."""
+
+    user_prompt = f"""BRIEF:\n{brief_text[:1000]}\n\nUPLOADED DOCUMENTS:\n{chr(10).join(doc_summaries)}"""
+    
+    try:
+        result = call_llm(
+            api_key=api_key,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_format="json",
+            max_tokens=500,
+        )
+        if isinstance(result, dict) and not result.get("parse_error"):
+            return result
+    except Exception:
+        pass
+    
+    return {"aligned": True, "warnings": [], "summary": "Context check unavailable."}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  SECTION 2: DATA MODELS
 # ══════════════════════════════════════════════════════════════════════════════
 
