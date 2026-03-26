@@ -292,6 +292,12 @@ with tabs[1]:
     a04 = r.get("A04", {})
     reqs = a04.get("requirements", [])
 
+    # Debug: check if A04 had a parse error
+    if a04.get("parse_error"):
+        st.error("⚠️ A04 BRD agent returned malformed JSON. The response was too long or truncated. Try with a shorter brief or re-run.")
+        with st.expander("Raw A04 Response (debug)"):
+            st.code(a04.get("raw_response", "No raw response")[:2000])
+
     # Executive Summary
     exec_sum = a04.get("executive_summary", {})
     if exec_sum:
