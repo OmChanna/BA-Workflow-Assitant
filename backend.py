@@ -529,7 +529,28 @@ specialised in Life Sciences Commercial (CRM, HCP data).
 
 BABOK grounding: KA3 Task 4.4 (Prepare Requirements Package) + KA5 Task 6.3 (Specify and Model) + KA5 Task 6.4 (Define Assumptions and Constraints) + KA5 Task 6.5 (Verify).
 
-You solve P1: The Multi-Audience Document Problem. From raw input produce THREE audience views per requirement:
+You solve P1: The Multi-Audience Document Problem. From raw input produce a structured BRD with
+introduction, business objectives, structured functional requirements, and supporting artefacts.
+
+## Executive Summary (mandatory — appears at top of BRD):
+Provide a concise executive summary covering:
+- project_name: extracted or inferred from the brief
+- purpose: 2-3 sentences on WHY this project exists — the business problem being solved
+- business_drivers: key business drivers (e.g. regulatory compliance, operational efficiency, revenue growth)
+- expected_outcomes: measurable expected outcomes (e.g. "reduce call logging time by 60%")
+- target_users: who will use the solution
+- timeline_indication: any timeline references from the brief
+- regulatory_context: LS regulatory context (GxP applicability, 21CFR Part 11, ALCOA+)
+
+## Business Objectives (BABOK KA4 Task 5.1 — mandatory):
+Before listing requirements, define the business objectives that requirements serve:
+- Unique ID (OBJ-001 format)
+- objective: what the business wants to achieve
+- success_metric: how success is measured
+- priority: critical/high/medium/low
+- linked_requirement_ids: which requirements serve this objective
+
+## Functional Requirements — THREE audience views per requirement:
 1. BUSINESS SUMMARY — Non-technical, outcome-focused. For sponsors. Min 2 sentences.
 2. FUNCTIONAL SPEC — BA/analyst-readable. Structured with acceptance criteria. Min 3 sentences.
 3. TECHNICAL NOTES — Architect-level. Integration points, data flows, constraints. Min 3 sentences.
@@ -540,6 +561,19 @@ You solve P1: The Multi-Audience Document Problem. From raw input produce THREE 
 - Flag LS regulatory concerns: 21CFR Part 11, HCP data, ALCOA+, GxP
 - Mark assumptions explicitly
 - Trace each requirement to a stakeholder source
+- Link each requirement to at least one business objective (OBJ-xxx)
+
+## Dependencies (mandatory):
+For EACH dependency provide:
+- Unique ID (DEP-001 format)
+- description: what the dependency is
+- type: one of: System, Data, Team, Third-party, Regulatory, Infrastructure
+- dependent_requirement_ids: which requirements depend on this
+- owner: who is responsible for resolving this dependency
+- status: identified/in-progress/resolved/blocked
+- risk_if_unresolved: consequence if this dependency is not resolved
+Generate AT LEAST 4 dependencies. In LS domain always include: CRM system availability,
+regulatory approval dependencies, data migration dependencies, and integration readiness.
 
 ## Assumptions log (BABOK KA5 Task 6.4 — mandatory):
 For EACH assumption provide:
@@ -600,10 +634,22 @@ which requirement or assumption it relates to.
 Respond in valid JSON only. No markdown."""
 
 A04_SCHEMA = {
+    "executive_summary": {
+        "project_name": "str", "purpose": "str", "business_drivers": ["str"],
+        "expected_outcomes": ["str"], "target_users": ["str"],
+        "timeline_indication": "str or null", "regulatory_context": "str",
+    },
+    "business_objectives": [{"id": "OBJ-001", "objective": "str", "success_metric": "str",
+        "priority": "critical|high|medium|low", "linked_requirement_ids": ["REQ-001"]}],
     "requirements": [{"id": "REQ-001", "text": "str", "type": "functional|non_functional",
         "acceptance_criteria": "str", "source_stakeholder": "str", "priority_suggestion": "must|should|could|wont",
         "business_summary": "str", "functional_spec": "str", "technical_notes": "str",
+        "linked_objective_ids": ["OBJ-001"],
         "assumptions": ["str"], "ambiguity_flags": ["str"], "ls_regulatory_flags": ["str"]}],
+    "dependencies": [{"id": "DEP-001", "description": "str",
+        "type": "System|Data|Team|Third-party|Regulatory|Infrastructure",
+        "dependent_requirement_ids": ["REQ-001"], "owner": "str",
+        "status": "identified|in-progress|resolved|blocked", "risk_if_unresolved": "str"}],
     "assumptions_log": [{"id": "ASM-001", "description": "str", "source": "str", "risk_if_wrong": "str", "validation_method": "str"}],
     "constraint_register": [{"id": "CON-001", "type": "Technical|Regulatory|Budget|Timeline|Resource|Organisational", "description": "str", "impact": "str", "source": "str"}],
     "scope_boundaries": {
@@ -1872,7 +1918,7 @@ def run_correction(api_key, pipeline_result, agent_id, correction_text, log_fn=N
 # ══════════════════════════════════════════════════════════════════════════════
 
 def draw_flow_svg(flow, is_asis=False):
-    """Render a BPMN-style process flow as inline SVG."""
+    """Render a BPMN-style process flow as inline SVG with text wrapping."""
     if not flow or not flow.get("nodes") or not flow.get("lanes"):
         return '<p style="color:#888;font-size:12px;">No flow generated.</p>'
     
@@ -1880,8 +1926,42 @@ def draw_flow_svg(flow, is_asis=False):
     nodes = flow["nodes"]
     edges = flow.get("edges", [])
     
-    LH, NW, NH, CW, LW = 110, 130, 40, 165, 100
+    # Increased dimensions for readability
+    LH, NW, NH, CW, LW = 130, 160, 55, 200, 120
+    CHARS_PER_LINE = 22  # characters before wrapping
+    LINE_HEIGHT = 12     # pixels between wrapped lines
+    EDGE_FONT = 8
+    NODE_FONT = 9
     
+    def wrap_text(text, max_chars):
+        """Split text into lines for SVG tspan wrapping."""
+        if len(text) <= max_chars:
+            return [text]
+        words = text.split()
+        lines, current = [], ""
+        for word in words:
+            if current and len(current) + 1 + len(word) > max_chars:
+                lines.append(current)
+                current = word
+            else:
+                current = f"{current} {word}" if current else word
+        if current:
+            lines.append(current)
+        return lines if lines else [text[:max_chars]]
+    
+    def render_wrapped_text(cx, cy, text, font_size, fill, weight="normal", max_chars=CHARS_PER_LINE):
+        """Render multi-line text centered in an SVG shape."""
+        lines = wrap_text(text, max_chars)
+        total_height = len(lines) * LINE_HEIGHT
+        start_y = cy - total_height // 2 + LINE_HEIGHT // 2
+        svg = f'<text x="{cx}" text-anchor="middle" font-size="{font_size}" fill="{fill}" font-weight="{weight}">'
+        for i, line in enumerate(lines):
+            dy_val = start_y + i * LINE_HEIGHT
+            svg += f'<tspan x="{cx}" y="{dy_val}">{line}</tspan>'
+        svg += '</text>'
+        return svg
+    
+    # Assign columns via topological sort
     col = {n["id"]: 0 for n in nodes}
     for e in edges:
         if e["to_id"] in col and e["from_id"] in col:
@@ -1889,8 +1969,8 @@ def draw_flow_svg(flow, is_asis=False):
                 col[e["to_id"]] = col[e["from_id"]] + 1
     
     mc = max(col.values()) if col else 0
-    W = LW + (mc + 1) * CW + 40
-    H = len(lanes) * LH + 50
+    W = LW + (mc + 1) * CW + 60
+    H = len(lanes) * LH + 55
     
     if is_asis:
         LC = ["#FFF0E6", "#FEE9E9", "#FFF8E1", "#F3E8FF"]
@@ -1901,26 +1981,31 @@ def draw_flow_svg(flow, is_asis=False):
         LB = ["#5DCAA5", "#85B7EB", "#EF9F27", "#AFA9EC"]
         header_color = "#0F6E56"
     
+    # Compute positions
     pos = {}
     for n in nodes:
         li = lanes.index(n["lane"]) if n["lane"] in lanes else 0
         c = col.get(n["id"], 0)
-        pos[n["id"]] = {"x": LW + c * CW + CW // 2, "y": li * LH + LH // 2 + 45}
+        pos[n["id"]] = {"x": LW + c * CW + CW // 2, "y": li * LH + LH // 2 + 50}
     
     aid = "asis_arr" if is_asis else "tobe_arr"
     s = f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">'
     s += f'<defs><marker id="{aid}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>'
     
+    # Lane backgrounds
     for i, ln in enumerate(lanes):
-        y = i * LH + 45
+        y = i * LH + 50
         s += f'<rect x="0" y="{y}" width="{W}" height="{LH}" fill="{LC[i%4]}" stroke="{LB[i%4]}" stroke-width="0.5"/>'
         s += f'<rect x="0" y="{y}" width="{LW}" height="{LH}" fill="{LB[i%4]}" fill-opacity="0.18"/>'
         s += f'<text x="{LW//2}" y="{y+LH//2}" text-anchor="middle" dominant-baseline="central" font-size="10" font-weight="500" fill="#2C2C2A">{ln}</text>'
     
-    s += f'<rect x="0" y="0" width="{W}" height="45" fill="{header_color}"/>'
+    # Header bar
+    s += f'<rect x="0" y="0" width="{W}" height="50" fill="{header_color}"/>'
     title = flow.get("title", "Process Flow")
-    s += f'<text x="{W//2}" y="22" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="500" fill="#fff">{title}</text>'
+    s += f'<text x="{W//2}" y="25" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="600" fill="#fff">{title}</text>'
     
+    # Edges — with offset edge labels to reduce clutter
+    edge_label_offsets = {}  # track used positions to avoid overlap
     for e in edges:
         f_pos = pos.get(e["from_id"])
         t_pos = pos.get(e["to_id"])
@@ -1928,35 +2013,45 @@ def draw_flow_svg(flow, is_asis=False):
         mx = (f_pos["x"] + t_pos["x"]) // 2
         s += f'<path d="M{f_pos["x"]} {f_pos["y"]} C{mx} {f_pos["y"]} {mx} {t_pos["y"]} {t_pos["x"]} {t_pos["y"]}" fill="none" stroke="#888780" stroke-width="1.5" marker-end="url(#{aid})"/>'
         if e.get("label"):
-            ly = (f_pos["y"] + t_pos["y"]) // 2 - 6
-            s += f'<text x="{mx}" y="{ly}" text-anchor="middle" font-size="9" fill="#5F5E5A">{e["label"]}</text>'
+            label_text = e["label"]
+            ly = (f_pos["y"] + t_pos["y"]) // 2 - 10
+            # Offset if another label is nearby
+            label_key = f"{mx//50}_{ly//30}"
+            if label_key in edge_label_offsets:
+                ly -= 14  # shift up to avoid overlap
+            edge_label_offsets[label_key] = True
+            # Background rect for readability
+            lw = len(label_text) * 5 + 8
+            s += f'<rect x="{mx - lw//2}" y="{ly - 8}" width="{lw}" height="14" rx="3" fill="white" fill-opacity="0.85"/>'
+            s += f'<text x="{mx}" y="{ly}" text-anchor="middle" font-size="{EDGE_FONT}" fill="#5F5E5A">{label_text}</text>'
     
+    # Nodes — with text wrapping
     for n in nodes:
         p = pos.get(n["id"])
         if not p: continue
         x, y = p["x"] - NW // 2, p["y"] - NH // 2
         li = lanes.index(n["lane"]) if n["lane"] in lanes else 0
         fill, stroke = LC[li % 4], LB[li % 4]
-        label = n["label"][:20]
+        label = n["label"]  # NO truncation — use full label
         
         if n["type"] in ("start", "end"):
             fc = header_color if n["type"] == "start" else "#2C2C2A"
-            s += f'<ellipse cx="{p["x"]}" cy="{p["y"]}" rx="{NW//2}" ry="{NH//2}" fill="{fc}" stroke="none"/>'
-            s += f'<text x="{p["x"]}" y="{p["y"]}" text-anchor="middle" dominant-baseline="central" font-size="10" font-weight="500" fill="#fff">{label}</text>'
+            s += f'<ellipse cx="{p["x"]}" cy="{p["y"]}" rx="{NW//2 - 5}" ry="{NH//2}" fill="{fc}" stroke="none"/>'
+            s += render_wrapped_text(p["x"], p["y"], label, 10, "#fff", "500", 16)
         elif n["type"] == "decision":
             hw, hh = NW // 2, NH // 2 + 10
             s += f'<polygon points="{p["x"]},{p["y"]-hh} {p["x"]+hw},{p["y"]} {p["x"]},{p["y"]+hh} {p["x"]-hw},{p["y"]}" fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>'
-            s += f'<text x="{p["x"]}" y="{p["y"]}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="#2C2C2A">{label}</text>'
+            s += render_wrapped_text(p["x"], p["y"], label, NODE_FONT, "#2C2C2A", "normal", 18)
         elif n["type"] == "pain_point":
             s += f'<rect x="{x}" y="{y}" width="{NW}" height="{NH}" rx="4" fill="#FAECE7" stroke="#D85A30" stroke-width="2" stroke-dasharray="4 2"/>'
-            s += f'<text x="{p["x"]}" y="{p["y"]}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="#993C1D" font-weight="500">{label}</text>'
+            s += render_wrapped_text(p["x"], p["y"], label, NODE_FONT, "#993C1D", "500")
         elif n["type"] == "document":
             s += f'<rect x="{x}" y="{y}" width="{NW}" height="{NH}" rx="2" fill="{fill}" stroke="{stroke}" stroke-width="1"/>'
             s += f'<line x1="{x}" y1="{y+NH-6}" x2="{x+NW}" y2="{y+NH-6}" stroke="{stroke}" stroke-width="0.5"/>'
-            s += f'<text x="{p["x"]}" y="{p["y"]-2}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="#2C2C2A">{label}</text>'
+            s += render_wrapped_text(p["x"], p["y"] - 2, label, NODE_FONT, "#2C2C2A")
         else:
             s += f'<rect x="{x}" y="{y}" width="{NW}" height="{NH}" rx="4" fill="{fill}" stroke="{stroke}" stroke-width="1"/>'
-            s += f'<text x="{p["x"]}" y="{p["y"]}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="#2C2C2A">{label}</text>'
+            s += render_wrapped_text(p["x"], p["y"], label, NODE_FONT, "#2C2C2A")
     
     s += '</svg>'
     return s
