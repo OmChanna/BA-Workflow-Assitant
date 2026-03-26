@@ -228,11 +228,11 @@ r = pr["results"]
 risk = s.get("risk_summary", {})
 
 # ── Summary metrics bar ──
-st.markdown(f"""<div style="background:#2C2C2A;color:white;padding:14px 20px;border-radius:10px;margin-bottom:16px;
-    display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;">
-    <span style="font-size:20px;font-weight:600;">{pr['project_name']}</span>
-    <span style="font-size:12px;color:#D3D1C7;">BA Workflow Assistant · 12 Agents · {pr['domain']}</span>
-</div>""", unsafe_allow_html=True)
+head_col1, head_col2 = st.columns([3, 2])
+with head_col1:
+    st.markdown(f"## {pr['project_name']}")
+with head_col2:
+    st.caption(f"BA Workflow Assistant · 12 Agents · {pr['domain']}")
 c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
 c1.metric("Stakeholders", s["stakeholders"])
 c2.metric("Requirements", s["requirements"])
