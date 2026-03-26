@@ -316,13 +316,19 @@ with tabs[2]:
     with col1:
         st.markdown("#### AS-IS — Current State")
         st.markdown("*Dashed red nodes = pain points*")
-        svg_asis = draw_flow_svg(asis_flow, is_asis=True)
-        st.markdown(svg_asis, unsafe_allow_html=True)
-
     with col2:
         st.markdown("#### TO-BE — Future State")
-        svg_tobe = draw_flow_svg(tobe_flow, is_asis=False)
-        st.markdown(svg_tobe, unsafe_allow_html=True)
+
+    # Render flows vertically (full width) to prevent overlap
+    st.markdown("---")
+    st.markdown("##### AS-IS — Current State")
+    svg_asis = draw_flow_svg(asis_flow, is_asis=True)
+    st.markdown(f'<div style="overflow-x:auto;background:#f8f6f0;border-radius:8px;padding:10px;">{svg_asis}</div>', unsafe_allow_html=True)
+
+    st.markdown("")
+    st.markdown("##### TO-BE — Future State")
+    svg_tobe = draw_flow_svg(tobe_flow, is_asis=False)
+    st.markdown(f'<div style="overflow-x:auto;background:#f8f6f0;border-radius:8px;padding:10px;">{svg_tobe}</div>', unsafe_allow_html=True)
 
     if gap_summary:
         st.info(f"**Gap Summary:** {gap_summary}")
