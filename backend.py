@@ -24,7 +24,7 @@ from openai import OpenAI
 
 LLM_MODEL = "gpt-4o"
 LLM_TEMPERATURE = 0.2
-LLM_MAX_TOKENS = 4000
+LLM_MAX_TOKENS = 8000
 
 def get_client(api_key: str) -> OpenAI:
     return OpenAI(api_key=api_key)
@@ -293,7 +293,7 @@ def call_llm(api_key: str, system_prompt: str, user_prompt: str, response_format
     return content
 
 def call_llm_structured(api_key: str, system_prompt: str, user_prompt: str, output_schema: dict,
-                        temperature: float = None) -> dict:
+                        temperature: float = None, max_tokens: int = None) -> dict:
     schema_instruction = (
         f"\n\nYou MUST respond with valid JSON matching this exact schema. "
         f"No markdown, no backticks, just the JSON object:\n{json.dumps(output_schema, indent=2)}"
@@ -304,6 +304,7 @@ def call_llm_structured(api_key: str, system_prompt: str, user_prompt: str, outp
         user_prompt=user_prompt,
         response_format="json",
         temperature=temperature,
+        max_tokens=max_tokens,
     )
 
 
@@ -811,7 +812,12 @@ def run_a04(api_key, brief_text, stakeholder_analysis=None, elicitation_notes=No
     if elicitation_notes:
         parts.append(f"\nELICITATION NOTES:\n{elicitation_notes}")
     parts.append("\nDOMAIN: Life Sciences Commercial (CRM, HCP Data)")
-    parts.append("\nProvide all three audience views per requirement. Flag LS regulatory concerns and ambiguity.")
+    parts.append("\nIMPORTANT: You MUST include ALL of these sections in your response:")
+    parts.append("1. executive_summary (with project_name, purpose, business_drivers, expected_outcomes, target_users, regulatory_context)")
+    parts.append("2. business_objectives (at least 3 objectives with OBJ-xxx IDs)")
+    parts.append("3. requirements (with all three audience views per requirement)")
+    parts.append("4. dependencies (at least 4 with DEP-xxx IDs)")
+    parts.append("5. assumptions_log, constraint_register, scope_boundaries, glossary, data_dictionary, open_questions")
     if corrections:
         parts.append(f"\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}")
     return call_llm_structured(
@@ -819,6 +825,7 @@ def run_a04(api_key, brief_text, stakeholder_analysis=None, elicitation_notes=No
         system_prompt=A04_SYSTEM,
         user_prompt="\n".join(parts),
         output_schema=A04_SCHEMA,
+        max_tokens=10000,
     )
 
 
