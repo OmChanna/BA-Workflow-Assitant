@@ -7,6 +7,7 @@ import json
 from backend import (
     run_pipeline, run_correction, draw_flow_svg,
     get_nfr_count, get_gxp_default_count,
+    extract_text_from_file, check_context_match,
     AGENT_ARTEFACT_TYPE, AGENT_DOWNSTREAM,
 )
 
@@ -37,6 +38,10 @@ if "logs" not in st.session_state:
     st.session_state.logs = []
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
+if "uploaded_docs" not in st.session_state:
+    st.session_state.uploaded_docs = []
+if "context_check" not in st.session_state:
+    st.session_state.context_check = None
 
 
 def log_msg(msg):
@@ -95,18 +100,101 @@ with st.sidebar:
         "Life Sciences Commercial", "Life Sciences Regulatory",
         "General IT", "Financial Services", "Healthcare"
     ])
-    brief_text = st.text_area("Project Brief", placeholder="Paste your raw client brief here...", height=250)
+    brief_text = st.text_area("Project Brief", placeholder="Paste your raw client brief here...", height=200)
 
-    run_disabled = not (api_key and project_name and brief_text)
+    # ── File Upload ──
+    st.divider()
+    st.markdown("**📎 Supporting Documents** *(optional)*")
+    st.caption("PDF, Word, Excel, TXT, CSV")
+    uploaded_files = st.file_uploader(
+        "Upload documents",
+        type=["pdf", "docx", "xlsx", "xls", "txt", "csv"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+    )
+    
+    # Process uploaded files
+    if uploaded_files:
+        new_docs = []
+        for uf in uploaded_files:
+            # Check if already processed
+            existing = [d for d in st.session_state.uploaded_docs if d["filename"] == uf.name]
+            if existing:
+                new_docs.append(existing[0])
+            else:
+                parsed = extract_text_from_file(uf)
+                new_docs.append(parsed)
+        st.session_state.uploaded_docs = new_docs
+    else:
+        st.session_state.uploaded_docs = []
+    
+    # Show uploaded docs with delete buttons
+    if st.session_state.uploaded_docs:
+        docs_to_remove = []
+        for i, doc in enumerate(st.session_state.uploaded_docs):
+            col_name, col_del = st.columns([4, 1])
+            with col_name:
+                if doc["success"]:
+                    st.markdown(f"✅ **{doc['filename']}** ({doc['file_type']}, {len(doc['text']):,} chars)")
+                else:
+                    st.markdown(f"❌ **{doc['filename']}** — {doc.get('error', 'Failed')}")
+            with col_del:
+                if st.button("✕", key=f"del_doc_{i}", help=f"Remove {doc['filename']}"):
+                    docs_to_remove.append(i)
+        
+        # Remove marked docs
+        if docs_to_remove:
+            st.session_state.uploaded_docs = [d for i, d in enumerate(st.session_state.uploaded_docs) if i not in docs_to_remove]
+            st.rerun()
+        
+        # Context match check button
+        if brief_text.strip() and api_key:
+            successful_docs = [d for d in st.session_state.uploaded_docs if d["success"]]
+            if successful_docs:
+                if st.button("🔍 Check Context Match", use_container_width=True):
+                    with st.spinner("Checking document alignment..."):
+                        st.session_state.context_check = check_context_match(
+                            api_key=api_key,
+                            brief_text=brief_text.strip(),
+                            document_texts=successful_docs,
+                        )
+                    st.rerun()
+        
+        # Show context check results
+        if st.session_state.context_check:
+            cc = st.session_state.context_check
+            if cc.get("aligned"):
+                st.success(f"✅ {cc.get('summary', 'Documents are aligned with brief.')}")
+            else:
+                st.error(f"⚠️ Context mismatch detected")
+                for w in cc.get("warnings", []):
+                    st.warning(w)
+                st.info(cc.get("summary", ""))
+
+    st.divider()
+
+    # Combine brief + document texts for pipeline
+    combined_brief = brief_text.strip() if brief_text else ""
+    successful_docs = [d for d in st.session_state.uploaded_docs if d.get("success")]
+    if successful_docs:
+        doc_appendix = "\n\n--- SUPPORTING DOCUMENTS ---\n"
+        for doc in successful_docs:
+            doc_appendix += f"\n[Document: {doc['filename']} ({doc['file_type']})]\n{doc['text'][:3000]}\n"
+        combined_brief += doc_appendix
+
+    run_disabled = not (api_key and project_name and (brief_text or successful_docs))
     if st.button("🚀 Structure this Brief", disabled=run_disabled, type="primary", use_container_width=True):
+        # Warn if context check showed mismatch
+        if st.session_state.context_check and not st.session_state.context_check.get("aligned"):
+            st.warning("⚠️ Context mismatch was detected. Proceeding anyway — review results carefully.")
+        
         st.session_state.logs = []
-        log_placeholder = st.empty()
         with st.spinner("Running 12 agents through pipeline (~3-4 minutes)..."):
             st.session_state.pipeline_result = run_pipeline(
                 api_key=api_key,
                 project_name=project_name.strip(),
                 domain=domain,
-                brief_text=brief_text.strip(),
+                brief_text=combined_brief,
                 log_fn=log_msg,
             )
         st.rerun()
