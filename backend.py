@@ -490,14 +490,14 @@ AGENT_ARTEFACT_TYPE = {
     "A06": "traceability", "A08": "risk_score",
     "A09_ASIS": "process_flow", "A09_TOBE": "process_flow",
     "A09_FSD": "fsd_section", "A10": "change_impact", "A14": "user_story",
-    "A11": "test_script", "A13": "handover_doc",
+    "A11": "test_script", "A13": "handover_doc", "A15": "frd",
 }
 
 AGENT_DOWNSTREAM = {
     "A01": ["A04", "A06"],
-    "A04": ["A09_ASIS", "A09_TOBE", "A05", "A08", "A09_FSD", "A10", "A06", "A14", "A11"],
-    "A05": ["A08", "A09_FSD", "A10", "A06", "A14", "A11"],
-    "A08": ["A09_FSD", "A10", "A14", "A11"],
+    "A04": ["A09_ASIS", "A09_TOBE", "A05", "A08", "A09_FSD", "A10", "A06", "A14", "A11", "A15"],
+    "A05": ["A08", "A09_FSD", "A10", "A06", "A14", "A11", "A15"],
+    "A08": ["A09_FSD", "A10", "A14", "A11", "A15"],
     "A09_ASIS": [],
     "A09_TOBE": ["A09_FSD"],
     "A09_FSD": ["A10", "A06", "A14", "A11"],
@@ -506,6 +506,7 @@ AGENT_DOWNSTREAM = {
     "A11": ["A13"],
     "A13": [],
     "A06": [],
+    "A15": [],
 }
 
 
@@ -1699,6 +1700,264 @@ def run_a13(api_key, brief_text, requirements=None, stakeholders=None, fsd_modul
     )
 
 
+# ── A15: FRD — Functional Requirements Document (on-demand, Requirements phase) ──
+
+A15_FRD_SYSTEM = """You are a Senior Business Analyst producing a professional Functional Requirements Document (FRD)
+for a Life Sciences Commercial project (CRM, HCP data).
+
+The FRD is the binding contract on system requirements between business and technical teams.
+It is produced AFTER BRD approval and adds technical context to approved business requirements.
+
+BABOK grounding: KA3 Task 4.4 (Prepare Requirements Package) + KA5 Task 6.3 (Specify and Model Requirements).
+
+You will receive approved BRD requirements, stakeholders, NFRs, scope boundaries, assumptions, 
+constraints, and glossary from upstream agents. Reuse these inputs — do NOT reinvent them.
+
+## FRD STRUCTURE — 14 SEGMENTS (generate all must-have segments):
+
+### SEGMENT 1: INTRODUCTION
+- 1.1 Purpose of Document: What this FRD is, who uses it, why it exists
+- 1.2 Project Summary: Project name, one-paragraph system description, primary vision
+- 1.3 Background: Business problem being solved, why new system needed, cost of NOT building
+- 1.4 Project Scope: What IS included (in this release), what is NOT included (deferred)
+- 1.5 System Purpose: User roles (5-8), locations, responsibilities, business need
+- 1.6 Document Overview: How to navigate the FRD, how sections relate
+
+### SEGMENT 2: FUNCTIONAL OBJECTIVES (prioritised by business value)
+- 2.1 High Priority (CRITICAL): Features without which system cannot function, cannot defer
+- 2.2 Medium Priority (IMPORTANT): Significant value, could defer to Phase 2 if time-constrained
+- 2.3 Low Priority (NICE-TO-HAVE): Enhance system but not critical, future releases
+
+### SEGMENT 3: NON-FUNCTIONAL REQUIREMENTS (quality attributes)
+- 3.1 Reliability, 3.2 Usability, 3.3 Performance, 3.4 Security
+- 3.5 Supportability/Maintenance, 3.6 Documentation/Help
+- 3.7 Third-Party Components, 3.8 External Interfaces
+- For LS: include 21CFR Part 11, ALCOA+, audit trail, e-signatures
+
+### SEGMENT 4: CONTEXT MODEL
+- 4.1 Goal Statement: What system achieves, business outcomes, success metrics
+- 4.2 Context Diagram description: System as central box, external systems, users, data flows
+- 4.3 System Externals: Table — name, type (input/output), frequency, data format, criticality
+
+### SEGMENT 5: USE CASES / USER WORKFLOWS
+- 5.1 Use Case summary: All user roles (actors), major workflows, system boundary
+- 5.2 Use Case Descriptions (5-10 major workflows): Each with ID (UC-001), name, preconditions,
+  main flow (8-12 steps), alternative flows, postconditions, exception handling, related requirements (FR-xxx)
+
+### SEGMENT 7: DETAILED FUNCTIONAL REQUIREMENTS
+- 7.1 Data Requirements:
+  - 7.1.1 Data Dictionary: Entity, Field name, Data type, Length, Required (Y/N), Validation rules, Example, Purpose
+- 7.2 Functional Process Requirements:
+  - 7.2.1 Business Processes: Process ID (FP-001), name, steps, inputs, outputs, exceptions, related reqs
+  - 7.2.2 Business Rules: Rule ID (BR-001), rule statement, when applies, if violated
+
+### SEGMENT 9: ASSUMPTIONS
+- Table: Assumption ID, statement, why necessary, what happens if false
+
+### SEGMENT 10: CONSTRAINTS
+- Table: Constraint ID, description, why it exists, design implications
+
+### SEGMENT 11: GLOSSARY
+- Alphabetical: Term, Definition, Context, Related terms, Business rules that apply
+- Include all LS-specific terms: HCP, CRM, EDC, AE, SAE, ALCOA+, GxP
+
+### SEGMENT 13: SIGN-OFF
+- List of signatories: Product Owner, Technical Lead, QA Lead, Regulatory Affairs, Security Officer
+- Attestation statement
+
+## NAMING CONVENTIONS:
+- Functional Requirements: FR-001, FR-002 (sequential)
+- Non-Functional Requirements: NFR-3.1-001 (by section)
+- Business Rules: BR-001, BR-002 (by functional area)
+- Use Cases: UC-001, UC-002 (sequential)
+- Business Processes: FP-001, FP-002 (sequential)
+- Data Entities: PascalCase (Subject, Visit, ProtocolAmendment)
+- Data Fields: camelCase (subjectId, dateOfBirth)
+
+## LANGUAGE RULES:
+- Requirements: use "shall" for mandatory, "should" for recommended
+- Active voice, present tense
+- Concrete examples, business-focused
+- 1-2 sentences per bullet point
+
+## QUALITY CHECKS:
+- All user roles appear in at least 2 use cases
+- All NFRs appear in at least 1 functional requirement
+- No use case has >15 steps (split if needed)
+- All business rules (7.2.2) referenced in requirements
+- Cross-reference: requirements → use cases, use cases → requirements
+
+Respond in valid JSON only. No markdown."""
+
+A15_FRD_SCHEMA = {
+    "segment_1_introduction": {
+        "purpose_of_document": "str",
+        "project_summary": {"project_name": "str", "system_description": "str", "primary_vision": "str"},
+        "background": {"business_problem": "str", "why_new_system": "str", "cost_of_not_building": "str"},
+        "project_scope": {
+            "in_scope": ["str"],
+            "out_of_scope": [{"item": "str", "reason": "str", "deferred_to": "str"}]
+        },
+        "system_purpose": {
+            "user_roles": [{"role": "str", "description": "str", "key_needs": "str"}],
+            "locations": "str",
+            "business_need": "str"
+        },
+        "document_overview": "str"
+    },
+    "segment_2_functional_objectives": {
+        "high_priority": [{"id": "FO-H-001", "objective": "str", "business_value": "str", "linked_requirements": ["FR-001"]}],
+        "medium_priority": [{"id": "FO-M-001", "objective": "str", "business_value": "str", "linked_requirements": ["FR-001"]}],
+        "low_priority": [{"id": "FO-L-001", "objective": "str", "business_value": "str", "linked_requirements": ["FR-001"]}],
+    },
+    "segment_3_nfr": {
+        "reliability": {"description": "str", "requirements": ["str"]},
+        "usability": {"description": "str", "requirements": ["str"]},
+        "performance": {"description": "str", "requirements": ["str"]},
+        "security": {"description": "str", "requirements": ["str"]},
+        "supportability": {"description": "str", "requirements": ["str"]},
+        "documentation": {"description": "str", "requirements": ["str"]},
+        "third_party": {"description": "str", "requirements": ["str"]},
+        "external_interfaces": {"description": "str", "requirements": ["str"]},
+        "ls_compliance": {"description": "str", "requirements": ["str"]},
+    },
+    "segment_4_context_model": {
+        "goal_statement": "str",
+        "context_diagram_description": "str",
+        "system_externals": [{"name": "str", "type": "input|output|bidirectional", "frequency": "str", "data_format": "str", "criticality": "critical|important|optional"}],
+    },
+    "segment_5_use_cases": [
+        {
+            "id": "UC-001",
+            "name": "str",
+            "actor": "str",
+            "preconditions": ["str"],
+            "main_flow": ["str"],
+            "alternative_flows": [{"condition": "str", "steps": ["str"]}],
+            "postconditions": ["str"],
+            "exception_handling": ["str"],
+            "related_requirements": ["FR-001"],
+        }
+    ],
+    "segment_7_detailed_requirements": {
+        "data_dictionary": [
+            {"entity": "str", "field_name": "str", "data_type": "str", "length": "str",
+             "required": "Y|N", "validation_rules": "str", "example": "str", "purpose": "str"}
+        ],
+        "business_processes": [
+            {"id": "FP-001", "name": "str", "description": "str",
+             "steps": ["str"], "inputs": ["str"], "outputs": ["str"],
+             "exceptions": ["str"], "related_requirements": ["FR-001"]}
+        ],
+        "business_rules": [
+            {"id": "BR-001", "rule_statement": "str", "when_applies": "str",
+             "if_violated": "str", "related_requirements": ["FR-001"]}
+        ],
+    },
+    "segment_9_assumptions": [
+        {"id": "ASM-001", "statement": "str", "why_necessary": "str", "if_false": "str"}
+    ],
+    "segment_10_constraints": [
+        {"id": "CON-001", "description": "str", "why_exists": "str", "design_implications": "str"}
+    ],
+    "segment_11_glossary": [
+        {"term": "str", "definition": "str", "context": "str", "related_terms": ["str"]}
+    ],
+    "segment_13_signoff": {
+        "signatories": [{"role": "str", "name": "str", "status": "pending"}],
+        "attestation": "str"
+    },
+}
+
+
+def run_a15_frd(api_key, brief_text, requirements=None, stakeholders=None, nfrs=None,
+                scope=None, assumptions=None, constraints=None, glossary=None,
+                executive_summary=None, risk_scores=None, corrections=None):
+    """Generate FRD from approved BRD — on-demand, Requirements phase (KA3 4.4)."""
+    parts = [f"PROJECT BRIEF:\n{brief_text}"]
+    if executive_summary:
+        parts.append(f"\nBRD EXECUTIVE SUMMARY (reuse, do not reinvent):\n{json.dumps(executive_summary, indent=2)}")
+    if requirements:
+        parts.append(f"\nAPPROVED BRD REQUIREMENTS:\n{json.dumps(requirements, indent=2)}")
+    if stakeholders:
+        parts.append(f"\nSTAKEHOLDERS:\n{json.dumps(stakeholders, indent=2)}")
+    if nfrs:
+        parts.append(f"\nNFR REGISTER (from A05):\n{json.dumps(nfrs, indent=2)}")
+    if scope:
+        parts.append(f"\nSCOPE BOUNDARIES (from BRD):\n{json.dumps(scope, indent=2)}")
+    if assumptions:
+        parts.append(f"\nASSUMPTIONS (from BRD — enrich, do not duplicate):\n{json.dumps(assumptions, indent=2)}")
+    if constraints:
+        parts.append(f"\nCONSTRAINTS (from BRD — enrich, do not duplicate):\n{json.dumps(constraints, indent=2)}")
+    if glossary:
+        parts.append(f"\nGLOSSARY (from BRD — expand with FRD-specific terms):\n{json.dumps(glossary, indent=2)}")
+    if risk_scores:
+        scored = risk_scores.get("scored_requirements", [])
+        high_risk = [s for s in scored if s.get("risk_tier") in ("critical", "high")]
+        if high_risk:
+            parts.append(f"\nHIGH/CRITICAL RISK REQUIREMENTS:\n{json.dumps(high_risk, indent=2)}")
+    parts.append("\nDOMAIN: Life Sciences Commercial (CRM, HCP Data)")
+    parts.append("\nGenerate all 14 FRD segments following the template structure. Use FR-xxx IDs for functional requirements, UC-xxx for use cases, BR-xxx for business rules, FP-xxx for processes.")
+    if corrections:
+        parts.append(f"\nBA CORRECTIONS (incorporate these changes — they take priority):\n{corrections}")
+    return call_llm_structured(
+        api_key=api_key,
+        system_prompt=A15_FRD_SYSTEM,
+        user_prompt="\n".join(parts),
+        output_schema=A15_FRD_SCHEMA,
+    )
+
+
+def run_frd_on_demand(api_key, pipeline_result, log_fn=None):
+    """On-demand FRD generation — called when BA clicks 'Generate FRD' after reviewing BRD.
+    Returns updated pipeline_result with A15 FRD added."""
+    if log_fn is None:
+        log_fn = print
+    
+    results = pipeline_result["results"]
+    brief_text = pipeline_result["brief_text"]
+    orchestrator = pipeline_result["orchestrator"]
+    event_store = pipeline_result["event_store"]
+    
+    a04 = results.get("A04", {})
+    
+    log_fn("A15 — FRD (Functional Requirements Document) — on-demand generation...")
+    results["A15"] = run_a15_frd(
+        api_key=api_key,
+        brief_text=brief_text,
+        requirements=a04.get("requirements", []),
+        stakeholders=results.get("A01", {}).get("stakeholders", []),
+        nfrs=results.get("A05", {}).get("applicable_nfrs", []),
+        scope=a04.get("scope_boundaries"),
+        assumptions=a04.get("assumptions_log", []),
+        constraints=a04.get("constraint_register", []),
+        glossary=a04.get("glossary", []),
+        executive_summary=a04.get("executive_summary"),
+        risk_scores=results.get("A08"),
+    )
+    
+    # Count outputs
+    frd = results["A15"]
+    uc_count = len(frd.get("segment_5_use_cases", []))
+    dd_count = len(frd.get("segment_7_detailed_requirements", {}).get("data_dictionary", []))
+    br_count = len(frd.get("segment_7_detailed_requirements", {}).get("business_rules", []))
+    log_fn(f"  FRD generated: {uc_count} use cases, {dd_count} data dictionary entries, {br_count} business rules")
+    
+    # Log event
+    event_store.log_event_sync(ChangeEvent(
+        actor_type=ActorType.AGENT, actor_id="A15",
+        action=EventAction.CREATE, artefact_type="frd",
+        artefact_id=orchestrator.project_id,
+        context=f"FRD generated on-demand: {uc_count} use cases, {dd_count} data dict, {br_count} business rules",
+        project_id=orchestrator.project_id,
+    ))
+    
+    # Update summary
+    pipeline_result["summary"]["frd_use_cases"] = uc_count
+    pipeline_result["summary"]["frd_data_dict"] = dd_count
+    pipeline_result["summary"]["frd_business_rules"] = br_count
+    
+    return pipeline_result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1969,6 +2228,17 @@ def run_correction(api_key, pipeline_result, agent_id, correction_text, log_fn=N
         results["A13"] = run_a13(api_key, brief_text=brief_text, requirements=reqs, stakeholders=stkh,
                                   fsd_modules=fsd_mods, process_flows=tobe_flow, risk_scores=results["A08"],
                                   nfrs=nfrs, user_stories=us, test_coverage=tc, corrections=correction_text)
+    elif agent_id == "A15":
+        a04 = results.get("A04", {})
+        results["A15"] = run_a15_frd(api_key, brief_text=brief_text,
+                                      requirements=reqs, stakeholders=stkh, nfrs=nfrs,
+                                      scope=a04.get("scope_boundaries"),
+                                      assumptions=a04.get("assumptions_log", []),
+                                      constraints=a04.get("constraint_register", []),
+                                      glossary=a04.get("glossary", []),
+                                      executive_summary=a04.get("executive_summary"),
+                                      risk_scores=results.get("A08"),
+                                      corrections=correction_text)
     
     log_fn(f"  ✓ {agent_id} regenerated")
     
@@ -2025,6 +2295,17 @@ def run_correction(api_key, pipeline_result, agent_id, correction_text, log_fn=N
             results["A13"] = run_a13(api_key, brief_text=brief_text, requirements=reqs, stakeholders=stkh,
                                       fsd_modules=fsd_mods, process_flows=tobe_flow, risk_scores=results.get("A08"),
                                       nfrs=nfrs, user_stories=us, test_coverage=tc)
+        elif ds_id == "A15":
+            if "A15" in results:  # only cascade if FRD was generated on-demand
+                a04 = results.get("A04", {})
+                results["A15"] = run_a15_frd(api_key, brief_text=brief_text,
+                                              requirements=reqs, stakeholders=stkh, nfrs=nfrs,
+                                              scope=a04.get("scope_boundaries"),
+                                              assumptions=a04.get("assumptions_log", []),
+                                              constraints=a04.get("constraint_register", []),
+                                              glossary=a04.get("glossary", []),
+                                              executive_summary=a04.get("executive_summary"),
+                                              risk_scores=results.get("A08"))
     
     # Rebuild summary
     reqs = results["A04"].get("requirements", [])
@@ -2049,6 +2330,9 @@ def run_correction(api_key, pipeline_result, agent_id, correction_text, log_fn=N
         "handover_docs": sum(1 for d in ["training_manual","l1_support_guide","onboarding_doc",
                                           "business_readiness_runbook","hypercare_plan"]
                              if results.get("A13", {}).get(d)),
+        "frd_use_cases": len(results.get("A15", {}).get("segment_5_use_cases", [])),
+        "frd_data_dict": len(results.get("A15", {}).get("segment_7_detailed_requirements", {}).get("data_dictionary", [])),
+        "frd_business_rules": len(results.get("A15", {}).get("segment_7_detailed_requirements", {}).get("business_rules", [])),
     }
     pipeline_result["results"] = results
     
