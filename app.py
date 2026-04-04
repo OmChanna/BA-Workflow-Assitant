@@ -9,6 +9,7 @@ from backend import (
     get_nfr_count, get_gxp_default_count,
     extract_text_from_file, check_context_match,
     AGENT_ARTEFACT_TYPE, AGENT_DOWNSTREAM,
+    run_frd_on_demand,
 )
 
 # ── Page config ──
@@ -86,7 +87,7 @@ def render_correction_widget(tab_agent_id, tab_label):
 
 with st.sidebar:
     st.markdown("## 📋 BA Workflow Assistant")
-    st.markdown(f"**GPT-4o · 12 Agents · BABOK Grounded**")
+    st.markdown(f"**GPT-4o · 13 Agents · BABOK Grounded**")
     st.markdown(f"NFR Library: {get_nfr_count()} NFRs ({get_gxp_default_count()} GxP defaults)")
     st.divider()
 
@@ -213,9 +214,11 @@ with st.sidebar:
 if st.session_state.pipeline_result is None:
     st.markdown("## Welcome to the BA Workflow Assistant")
     st.markdown("""
-    Enter your project details in the sidebar and click **Structure this Brief** to run the full 12-agent pipeline.
+    Enter your project details in the sidebar and click **Structure this Brief** to run the full pipeline.
     
     **Pipeline:** A01 Stakeholders → A04 BRD → A09 Process Flows → A05 NFR → A08 Risk → A09 FSD → A10 Change Impact → A06 Traceability → A14 Agile/Sprint → A11 Test Scripts → A13 Handover
+    
+    **On-demand:** A15 FRD (Functional Requirements Document) — generated after BA reviews BRD
     
     **Covers all 8 BABOK phases:** Pre-discovery → Discovery → Requirements → Analysis → Prioritisation → Agile/Scrum → Testing → Handover
     """)
@@ -247,7 +250,7 @@ st.divider()
 # ── Tabs ──
 tabs = st.tabs([
     "👥 Stakeholders", "📄 Requirements", "🔄 Process Flows", "⚙️ NFR Register",
-    "⚠️ Risk & Priority", "🏗️ Solution Design", "🏃 Agile/Sprint",
+    "⚠️ Risk & Priority", "🏗️ Solution Design", "📋 FRD", "🏃 Agile/Sprint",
     "🧪 Testing", "📦 Handover", "📊 Overview"
 ])
 
@@ -658,9 +661,286 @@ with tabs[5]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TAB 6: AGILE/SPRINT
+#  TAB 6: FRD — Functional Requirements Document (on-demand)
 # ══════════════════════════════════════════════════════════════════════════════
 with tabs[6]:
+    st.subheader("Functional Requirements Document — KA3 Task 4.4")
+    st.caption("On-demand: Generated after BA reviews and approves BRD requirements")
+
+    frd = r.get("A15", {})
+
+    if not frd:
+        st.info("📋 **FRD not yet generated.** Review BRD requirements first, then generate the FRD.")
+        st.markdown("""
+        The FRD expands approved BRD requirements into a detailed technical contract with:
+        - **14 standardised segments** following professional FRD template
+        - **Use cases** with main flows, alternative flows, exception handling
+        - **Data dictionary** with field-level specifications
+        - **Business rules** with violation handling
+        - **Reuses** BRD scope, assumptions, constraints, glossary — enriched with technical context
+        """)
+        if st.button("📋 Generate FRD", type="primary", key="gen_frd"):
+            if not st.session_state.api_key:
+                st.error("Enter API key in sidebar first.")
+            elif st.session_state.pipeline_result is None:
+                st.error("Run the pipeline first to generate BRD requirements.")
+            else:
+                with st.spinner("Generating FRD (14 segments)... this may take 60-90 seconds"):
+                    st.session_state.pipeline_result = run_frd_on_demand(
+                        api_key=st.session_state.api_key,
+                        pipeline_result=st.session_state.pipeline_result,
+                        log_fn=log_msg,
+                    )
+                st.rerun()
+    else:
+        # ── Segment 1: Introduction ──
+        seg1 = frd.get("segment_1_introduction", {})
+        if seg1:
+            st.markdown("#### Segment 1: Introduction")
+            proj = seg1.get("project_summary", {})
+            if proj:
+                st.markdown(f"""<div style="background:#f0f4f8;border-left:4px solid #185FA5;padding:14px 18px;border-radius:0 8px 8px 0;margin-bottom:12px;">
+                    <div style="font-size:16px;font-weight:600;color:#185FA5;margin-bottom:6px;">{proj.get('project_name', '')}</div>
+                    <div style="font-size:13px;margin-bottom:6px;">{proj.get('system_description', '')}</div>
+                    <div style="font-size:12px;color:#555;"><b>Vision:</b> {proj.get('primary_vision', '')}</div>
+                </div>""", unsafe_allow_html=True)
+
+            bg = seg1.get("background", {})
+            if bg:
+                with st.expander("Background & Business Problem"):
+                    st.markdown(f"**Problem:** {bg.get('business_problem', '')}")
+                    st.markdown(f"**Why needed:** {bg.get('why_new_system', '')}")
+                    st.markdown(f"**Cost of inaction:** {bg.get('cost_of_not_building', '')}")
+
+            scope = seg1.get("project_scope", {})
+            if scope:
+                with st.expander("Project Scope"):
+                    sc1, sc2 = st.columns(2)
+                    with sc1:
+                        st.markdown("**✅ In Scope**")
+                        for item in scope.get("in_scope", []):
+                            st.markdown(f"- {item}")
+                    with sc2:
+                        st.markdown("**❌ Out of Scope**")
+                        for item in scope.get("out_of_scope", []):
+                            if isinstance(item, dict):
+                                st.markdown(f"- **{item.get('item', '')}** — {item.get('reason', '')} *(→ {item.get('deferred_to', 'TBD')})*")
+                            else:
+                                st.markdown(f"- {item}")
+
+            sys_purpose = seg1.get("system_purpose", {})
+            if sys_purpose and sys_purpose.get("user_roles"):
+                with st.expander(f"User Roles ({len(sys_purpose['user_roles'])})"):
+                    st.dataframe([{
+                        "Role": ur.get("role"), "Description": ur.get("description"),
+                        "Key Needs": ur.get("key_needs"),
+                    } for ur in sys_purpose["user_roles"]], use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # ── Segment 2: Functional Objectives ──
+        seg2 = frd.get("segment_2_functional_objectives", {})
+        if seg2:
+            st.markdown("#### Segment 2: Functional Objectives")
+            for priority_level, label, color in [
+                ("high_priority", "🔴 High Priority (Critical)", "red"),
+                ("medium_priority", "🟠 Medium Priority (Important)", "orange"),
+                ("low_priority", "🔵 Low Priority (Nice-to-Have)", "blue"),
+            ]:
+                items = seg2.get(priority_level, [])
+                if items:
+                    st.markdown(f"**{label}** ({len(items)})")
+                    for obj in items:
+                        if isinstance(obj, dict):
+                            linked = ", ".join(obj.get("linked_requirements", []))
+                            st.markdown(f"- **{obj.get('id', '')}:** {obj.get('objective', '')} — *{obj.get('business_value', '')}* → {linked}")
+
+        st.divider()
+
+        # ── Segment 3: NFR Summary ──
+        seg3 = frd.get("segment_3_nfr", {})
+        if seg3:
+            st.markdown("#### Segment 3: Non-Functional Requirements")
+            nfr_categories = [
+                ("reliability", "Reliability"), ("usability", "Usability"),
+                ("performance", "Performance"), ("security", "Security"),
+                ("supportability", "Supportability"), ("documentation", "Documentation"),
+                ("external_interfaces", "External Interfaces"), ("ls_compliance", "LS Compliance"),
+            ]
+            for key, label in nfr_categories:
+                cat = seg3.get(key, {})
+                if cat and cat.get("requirements"):
+                    with st.expander(f"{label} — {len(cat['requirements'])} requirements"):
+                        st.markdown(f"*{cat.get('description', '')}*")
+                        for req in cat["requirements"]:
+                            st.markdown(f"- {req}")
+
+        st.divider()
+
+        # ── Segment 4: Context Model ──
+        seg4 = frd.get("segment_4_context_model", {})
+        if seg4:
+            st.markdown("#### Segment 4: Context Model")
+            if seg4.get("goal_statement"):
+                st.info(f"**Goal:** {seg4['goal_statement']}")
+            if seg4.get("context_diagram_description"):
+                st.markdown(f"*Context diagram:* {seg4['context_diagram_description']}")
+            externals = seg4.get("system_externals", [])
+            if externals:
+                st.dataframe([{
+                    "System": e.get("name"), "Type": e.get("type"),
+                    "Frequency": e.get("frequency"), "Format": e.get("data_format"),
+                    "Criticality": e.get("criticality", "").upper(),
+                } for e in externals], use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # ── Segment 5: Use Cases ──
+        seg5 = frd.get("segment_5_use_cases", [])
+        if seg5:
+            st.markdown(f"#### Segment 5: Use Cases ({len(seg5)})")
+            for uc in seg5:
+                if not isinstance(uc, dict):
+                    continue
+                related = ", ".join(uc.get("related_requirements", []))
+                with st.expander(f"{uc.get('id', '?')}: {uc.get('name', '?')} — Actor: {uc.get('actor', '?')}"):
+                    st.markdown(f"**Related requirements:** {related}")
+                    st.markdown(f"**Preconditions:** {'; '.join(uc.get('preconditions', []))}")
+                    st.markdown("**Main Flow:**")
+                    for i, step in enumerate(uc.get("main_flow", []), 1):
+                        st.markdown(f"  {i}. {step}")
+                    alt_flows = uc.get("alternative_flows", [])
+                    if alt_flows:
+                        st.markdown("**Alternative Flows:**")
+                        for af in alt_flows:
+                            if isinstance(af, dict):
+                                st.markdown(f"  *If {af.get('condition', '')}:* {'; '.join(af.get('steps', []))}")
+                    exceptions = uc.get("exception_handling", [])
+                    if exceptions:
+                        st.markdown(f"**Exception Handling:** {'; '.join(exceptions)}")
+                    st.markdown(f"**Postconditions:** {'; '.join(uc.get('postconditions', []))}")
+
+        st.divider()
+
+        # ── Segment 7: Detailed Functional Requirements ──
+        seg7 = frd.get("segment_7_detailed_requirements", {})
+        if seg7:
+            st.markdown("#### Segment 7: Detailed Functional Requirements")
+
+            # Data Dictionary
+            dd = seg7.get("data_dictionary", [])
+            if dd:
+                with st.expander(f"7.1 Data Dictionary ({len(dd)} fields)"):
+                    st.dataframe([{
+                        "Entity": d.get("entity"), "Field": d.get("field_name"),
+                        "Type": d.get("data_type"), "Length": d.get("length"),
+                        "Req'd": d.get("required"), "Validation": d.get("validation_rules"),
+                        "Example": d.get("example"),
+                    } for d in dd if isinstance(d, dict)], use_container_width=True, hide_index=True)
+
+            # Business Processes
+            bp = seg7.get("business_processes", [])
+            if bp:
+                with st.expander(f"7.2.1 Business Processes ({len(bp)})"):
+                    for proc in bp:
+                        if not isinstance(proc, dict):
+                            continue
+                        st.markdown(f"**{proc.get('id', '?')}: {proc.get('name', '?')}**")
+                        st.markdown(f"*{proc.get('description', '')}*")
+                        for i, step in enumerate(proc.get("steps", []), 1):
+                            st.markdown(f"  {i}. {step}")
+                        related = ", ".join(proc.get("related_requirements", []))
+                        if related:
+                            st.caption(f"Related: {related}")
+                        st.divider()
+
+            # Business Rules
+            br = seg7.get("business_rules", [])
+            if br:
+                with st.expander(f"7.2.2 Business Rules ({len(br)})"):
+                    st.dataframe([{
+                        "ID": rule.get("id"), "Rule": rule.get("rule_statement"),
+                        "When Applies": rule.get("when_applies"),
+                        "If Violated": rule.get("if_violated"),
+                        "Related Reqs": ", ".join(rule.get("related_requirements", [])),
+                    } for rule in br if isinstance(rule, dict)], use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # ── Segments 9, 10, 11: Assumptions, Constraints, Glossary ──
+        seg9 = frd.get("segment_9_assumptions", [])
+        seg10 = frd.get("segment_10_constraints", [])
+        seg11 = frd.get("segment_11_glossary", [])
+
+        col_a, col_c = st.columns(2)
+        with col_a:
+            if seg9:
+                st.markdown(f"#### Segment 9: Assumptions ({len(seg9)})")
+                st.dataframe([{
+                    "ID": a.get("id"), "Assumption": a.get("statement"),
+                    "Why": a.get("why_necessary"), "If False": a.get("if_false"),
+                } for a in seg9 if isinstance(a, dict)], use_container_width=True, hide_index=True)
+        with col_c:
+            if seg10:
+                st.markdown(f"#### Segment 10: Constraints ({len(seg10)})")
+                st.dataframe([{
+                    "ID": c.get("id"), "Constraint": c.get("description"),
+                    "Why": c.get("why_exists"), "Impact": c.get("design_implications"),
+                } for c in seg10 if isinstance(c, dict)], use_container_width=True, hide_index=True)
+
+        if seg11:
+            with st.expander(f"Segment 11: Glossary ({len(seg11)} terms)"):
+                st.dataframe([{
+                    "Term": g.get("term"), "Definition": g.get("definition"),
+                    "Context": g.get("context"),
+                    "Related": ", ".join(g.get("related_terms", [])) if isinstance(g.get("related_terms"), list) else "",
+                } for g in seg11 if isinstance(g, dict)], use_container_width=True, hide_index=True)
+
+        # ── Segment 13: Sign-off ──
+        seg13 = frd.get("segment_13_signoff", {})
+        if seg13:
+            st.divider()
+            st.markdown("#### Segment 13: Sign-Off")
+            sigs = seg13.get("signatories", [])
+            if sigs:
+                st.dataframe([{
+                    "Role": s.get("role"), "Name": s.get("name", "TBD"),
+                    "Status": s.get("status", "pending").upper(),
+                } for s in sigs if isinstance(s, dict)], use_container_width=True, hide_index=True)
+            if seg13.get("attestation"):
+                st.caption(f"*{seg13['attestation']}*")
+
+        st.divider()
+
+        # ── FRD Summary Metrics ──
+        frd_uc = len(seg5) if isinstance(seg5, list) else 0
+        frd_dd = len(seg7.get("data_dictionary", [])) if seg7 else 0
+        frd_br = len(seg7.get("business_rules", [])) if seg7 else 0
+        frd_bp = len(seg7.get("business_processes", [])) if seg7 else 0
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Use Cases", frd_uc)
+        mc2.metric("Data Fields", frd_dd)
+        mc3.metric("Business Rules", frd_br)
+        mc4.metric("Processes", frd_bp)
+
+        # ── Regenerate button ──
+        if st.button("🔄 Regenerate FRD", key="regen_frd"):
+            with st.spinner("Regenerating FRD..."):
+                st.session_state.pipeline_result = run_frd_on_demand(
+                    api_key=st.session_state.api_key,
+                    pipeline_result=st.session_state.pipeline_result,
+                    log_fn=log_msg,
+                )
+            st.rerun()
+
+        render_correction_widget("A15", "FRD")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TAB 7: AGILE/SPRINT
+# ══════════════════════════════════════════════════════════════════════════════
+with tabs[7]:
     st.subheader("Agile/Sprint — T 9.33, T 9.1")
     a14 = r.get("A14", {})
     user_stories = a14.get("user_stories", [])
@@ -743,9 +1023,9 @@ with tabs[6]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TAB 7: TESTING
+#  TAB 8: TESTING
 # ══════════════════════════════════════════════════════════════════════════════
-with tabs[7]:
+with tabs[8]:
     st.subheader("Functional Test Cases — KA6 7.5, P5")
     a11 = r.get("A11", {})
     test_cases = a11.get("test_cases", [])
@@ -827,9 +1107,9 @@ with tabs[7]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TAB 8: HANDOVER
+#  TAB 9: HANDOVER
 # ══════════════════════════════════════════════════════════════════════════════
-with tabs[8]:
+with tabs[9]:
     st.subheader("Handover Documentation — KA6 7.3/7.4/7.6, P7")
     a13 = r.get("A13", {})
 
@@ -934,9 +1214,9 @@ with tabs[8]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TAB 9: OVERVIEW
+#  TAB 10: OVERVIEW
 # ══════════════════════════════════════════════════════════════════════════════
-with tabs[9]:
+with tabs[10]:
     st.subheader("Project Overview & Event Log")
 
     # Pipeline summary
