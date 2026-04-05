@@ -1,6 +1,7 @@
 """
 BA Workflow Assistant — Streamlit UI
-12 Agents · BABOK Grounded · Life Sciences Commercial
+13 Agents · BABOK Grounded · Life Sciences Commercial
++ Knowledge Management (RAG) for output consistency
 """
 import streamlit as st
 import json
@@ -10,6 +11,7 @@ from backend import (
     extract_text_from_file, check_context_match,
     AGENT_ARTEFACT_TYPE, AGENT_DOWNSTREAM,
     run_frd_on_demand,
+    RAG_AVAILABLE,
 )
 
 # ── Page config ──
@@ -54,6 +56,15 @@ def render_correction_widget(tab_agent_id, tab_label):
     """Render a correction form scoped to a specific agent/tab."""
     if st.session_state.pipeline_result is None:
         return
+    
+    # Show validation warnings if any
+    agent_result = st.session_state.pipeline_result.get("results", {}).get(tab_agent_id, {})
+    validation_warnings = agent_result.get("_validation_warnings", [])
+    if validation_warnings:
+        with st.expander(f"⚠️ Validation Warnings ({len(validation_warnings)})", expanded=False):
+            for w in validation_warnings:
+                st.warning(w)
+    
     with st.container():
         st.markdown(f"""<div class="correction-box">
             🔄 <b>BA Review Gate</b> — {tab_label}
@@ -89,6 +100,22 @@ with st.sidebar:
     st.markdown("## 📋 BA Workflow Assistant")
     st.markdown(f"**GPT-4o · 13 Agents · BABOK Grounded**")
     st.markdown(f"NFR Library: {get_nfr_count()} NFRs ({get_gxp_default_count()} GxP defaults)")
+    
+    # RAG status indicator
+    if RAG_AVAILABLE:
+        try:
+            from knowledge_store import check_qdrant_health
+            health = check_qdrant_health()
+            if health.get("healthy"):
+                st.markdown("🧠 **Knowledge Base:** 🟢 Connected")
+            else:
+                st.markdown("🧠 **Knowledge Base:** 🟡 Qdrant offline")
+        except Exception:
+            st.markdown("🧠 **Knowledge Base:** 🟡 Unavailable")
+    else:
+        st.markdown("🧠 **Knowledge Base:** ⚪ Not configured")
+    
+    st.caption("[📚 Manage Knowledge Base →](./admin)")
     st.divider()
 
     api_key = st.text_input("OpenAI API Key", type="password", value=st.session_state.api_key)
