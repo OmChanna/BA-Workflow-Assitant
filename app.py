@@ -93,6 +93,202 @@ def render_correction_widget(tab_agent_id, tab_label):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  KNOWLEDGE MANAGEMENT TAB — embedded in main app
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _render_knowledge_admin_tab():
+    """Render the knowledge management admin interface as a tab."""
+    
+    st.subheader("🧠 Knowledge Management")
+    st.caption("Upload reference documents to improve agent output quality.")
+    
+    # Check if modules available
+    if not RAG_AVAILABLE:
+        st.info("Knowledge management modules not loaded. Make sure `knowledge_store.py` and `ingestion.py` are in the same directory as `app.py`.")
+        return
+    
+    try:
+        from knowledge_store import (
+            COLLECTION_STRUCTURE, COLLECTION_DOMAIN,
+            list_documents, delete_document, get_collection_stats,
+            check_qdrant_health, ensure_collections,
+        )
+        from ingestion import (
+            ingest_structure_example, ingest_domain_knowledge,
+            AGENT_DISPLAY_MAP, DOMAIN_TREE,
+        )
+    except ImportError as e:
+        st.error(f"Import error: {e}")
+        return
+    
+    # API key
+    api_key = st.session_state.get("api_key", "")
+    if not api_key:
+        st.warning("Enter your OpenAI API key in the sidebar first — it's needed for embedding documents.")
+    
+    # Health check
+    health = check_qdrant_health()
+    
+    if not health["healthy"]:
+        # Show offline UI with setup instructions
+        col_s1, col_s2, col_s3 = st.columns(3)
+        col_s1.metric("Structure Examples", "—")
+        col_s2.metric("Domain Knowledge", "—")
+        col_s3.metric("Qdrant Status", "🔴 Offline")
+        
+        st.divider()
+        st.warning("⚠️ Qdrant vector database is not running. Knowledge management requires Qdrant.")
+        
+        st.markdown("### Setup Options")
+        
+        st.markdown("""
+**Option 1: Qdrant Cloud (recommended for Streamlit Cloud)**
+1. Go to [cloud.qdrant.io](https://cloud.qdrant.io) and sign up (free tier = 1GB)
+2. Create a cluster → get your **URL** and **API key**
+3. In Streamlit Cloud → Settings → Secrets, add:
+```toml
+QDRANT_HOST = "your-cluster-url.cloud.qdrant.io"
+QDRANT_PORT = "6333"
+QDRANT_API_KEY = "your-api-key"
+```
+
+**Option 2: Local Docker (for local development)**
+```bash
+docker run -d -p 6333:6333 -v ./qdrant_data:/qdrant/storage qdrant/qdrant
+```
+        """)
+        
+        st.info("💡 **The main pipeline works fine without Qdrant.** Knowledge management is optional — it improves output consistency by giving agents reference examples and domain context.")
+        
+        with st.expander("What this does once Qdrant is connected"):
+            st.markdown("""
+**Structure Examples** — Upload past good BRDs, FRDs, test scripts under the matching agent. At runtime, agents retrieve your examples and match their output style.
+
+**Domain Knowledge** — Upload regulatory SOPs, style guides, standards. The system retrieves relevant domain context and injects it into agent prompts.
+
+**Pipeline:** Upload → Parse → Chunk (500 tokens) → Embed (text-embedding-3-small) → Store → Retrieve at agent runtime
+            """)
+        return
+    
+    # ── Qdrant is running — show full interface ──
+    try:
+        ensure_collections()
+    except Exception as e:
+        st.error(f"Failed to initialize collections: {e}")
+        return
+    
+    # Stats
+    struct_stats = get_collection_stats(COLLECTION_STRUCTURE)
+    domain_stats = get_collection_stats(COLLECTION_DOMAIN)
+    col_s1, col_s2, col_s3 = st.columns(3)
+    col_s1.metric("Structure Examples", f"{struct_stats['total_points']} chunks")
+    col_s2.metric("Domain Knowledge", f"{domain_stats['total_points']} chunks")
+    col_s3.metric("Qdrant Status", "🟢 Connected")
+    
+    st.divider()
+    
+    # Two-panel layout
+    left_panel, right_panel = st.columns(2)
+    
+    with left_panel:
+        st.markdown("#### 📐 Structure / Template Examples")
+        st.caption("Upload past good BRDs, FRDs, etc. to teach agents output style.")
+        
+        tabs_agents = {}
+        for agent_id, info in AGENT_DISPLAY_MAP.items():
+            tab = info["tab"]
+            if tab not in tabs_agents:
+                tabs_agents[tab] = []
+            tabs_agents[tab].append((agent_id, info["name"]))
+        
+        for tab_name, agents in tabs_agents.items():
+            with st.expander(f"📁 {tab_name}", expanded=False):
+                for agent_id, agent_name in agents:
+                    st.markdown(f"**{agent_id} — {agent_name}**")
+                    
+                    try:
+                        docs = list_documents(COLLECTION_STRUCTURE, filters={"agent_id": agent_id})
+                    except Exception:
+                        docs = []
+                    
+                    if docs:
+                        for doc in docs:
+                            dc1, dc2 = st.columns([4, 1])
+                            with dc1:
+                                upload_date = doc.get("upload_date", "")[:10]
+                                st.caption(f"📄 {doc['filename']} · {doc['chunk_count']} chunks · {upload_date}")
+                            with dc2:
+                                if st.button("🗑️", key=f"del_s_{doc['doc_id']}", help=f"Delete {doc['filename']}"):
+                                    delete_document(COLLECTION_STRUCTURE, doc["doc_id"])
+                                    st.rerun()
+                    else:
+                        st.caption("No examples yet.")
+                    
+                    uploaded = st.file_uploader(
+                        f"Upload for {agent_id}",
+                        type=["pdf", "docx", "txt", "md", "xlsx", "csv", "json"],
+                        key=f"ul_s_{agent_id}",
+                        label_visibility="collapsed",
+                    )
+                    if uploaded and api_key:
+                        with st.spinner(f"Ingesting {uploaded.name}..."):
+                            result = ingest_structure_example(api_key=api_key, uploaded_file=uploaded, agent_id=agent_id)
+                            if result["success"]:
+                                st.success(f"✅ {result['filename']}: {result['chunk_count']} chunks")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {result['error']}")
+                    elif uploaded and not api_key:
+                        st.warning("Enter API key in sidebar first.")
+                    st.markdown("---")
+    
+    with right_panel:
+        st.markdown("#### 📚 Domain Knowledge")
+        st.caption("Upload regulatory docs, SOPs, style guides, standards.")
+        
+        for domain_key, domain_info in DOMAIN_TREE.items():
+            with st.expander(f"🏢 {domain_info['name']}", expanded=(domain_key == "life_sciences")):
+                for sub_key, sub_name in domain_info["subdomains"].items():
+                    st.markdown(f"**{sub_name}**")
+                    
+                    try:
+                        docs = list_documents(COLLECTION_DOMAIN, filters={"domain": domain_key, "subdomain": sub_key})
+                    except Exception:
+                        docs = []
+                    
+                    if docs:
+                        for doc in docs:
+                            dc1, dc2 = st.columns([4, 1])
+                            with dc1:
+                                upload_date = doc.get("upload_date", "")[:10]
+                                st.caption(f"📄 {doc['filename']} · {doc['chunk_count']} chunks · {upload_date}")
+                            with dc2:
+                                if st.button("🗑️", key=f"del_d_{doc['doc_id']}", help=f"Delete {doc['filename']}"):
+                                    delete_document(COLLECTION_DOMAIN, doc["doc_id"])
+                                    st.rerun()
+                    else:
+                        st.caption("No documents yet.")
+                    
+                    uploaded = st.file_uploader(
+                        f"Upload for {sub_name}",
+                        type=["pdf", "docx", "txt", "md", "xlsx", "csv", "json"],
+                        key=f"ul_d_{domain_key}_{sub_key}",
+                        label_visibility="collapsed",
+                    )
+                    if uploaded and api_key:
+                        with st.spinner(f"Ingesting {uploaded.name}..."):
+                            result = ingest_domain_knowledge(api_key=api_key, uploaded_file=uploaded, domain=domain_key, subdomain=sub_key)
+                            if result["success"]:
+                                st.success(f"✅ {result['filename']}: {result['chunk_count']} chunks")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {result['error']}")
+                    elif uploaded and not api_key:
+                        st.warning("Enter API key in sidebar first.")
+                    st.markdown("---")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  SIDEBAR — Project Setup
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -115,7 +311,7 @@ with st.sidebar:
     else:
         st.markdown("🧠 **Knowledge Base:** ⚪ Not configured")
     
-    st.caption("[📚 Manage Knowledge Base →](./admin)")
+    st.caption("Use the 🧠 Knowledge tab to manage reference docs")
     st.divider()
 
     api_key = st.text_input("OpenAI API Key", type="password", value=st.session_state.api_key)
@@ -240,15 +436,23 @@ with st.sidebar:
 
 if st.session_state.pipeline_result is None:
     st.markdown("## Welcome to the BA Workflow Assistant")
-    st.markdown("""
-    Enter your project details in the sidebar and click **Structure this Brief** to run the full pipeline.
     
-    **Pipeline:** A01 Stakeholders → A04 BRD → A09 Process Flows → A05 NFR → A08 Risk → A09 FSD → A10 Change Impact → A06 Traceability → A14 Agile/Sprint → A11 Test Scripts → A13 Handover
+    welcome_tab, knowledge_tab = st.tabs(["🏠 Get Started", "🧠 Knowledge Management"])
     
-    **On-demand:** A15 FRD (Functional Requirements Document) — generated after BA reviews BRD
+    with welcome_tab:
+        st.markdown("""
+        Enter your project details in the sidebar and click **Structure this Brief** to run the full pipeline.
+        
+        **Pipeline:** A01 Stakeholders → A04 BRD → A09 Process Flows → A05 NFR → A08 Risk → A09 FSD → A10 Change Impact → A06 Traceability → A14 Agile/Sprint → A11 Test Scripts → A13 Handover
+        
+        **On-demand:** A15 FRD (Functional Requirements Document) — generated after BA reviews BRD
+        
+        **Covers all 8 BABOK phases:** Pre-discovery → Discovery → Requirements → Analysis → Prioritisation → Agile/Scrum → Testing → Handover
+        """)
     
-    **Covers all 8 BABOK phases:** Pre-discovery → Discovery → Requirements → Analysis → Prioritisation → Agile/Scrum → Testing → Handover
-    """)
+    with knowledge_tab:
+        _render_knowledge_admin_tab()
+    
     st.stop()
 
 # ── Data extraction ──
@@ -278,7 +482,7 @@ st.divider()
 tabs = st.tabs([
     "👥 Stakeholders", "📄 Requirements", "🔄 Process Flows", "⚙️ NFR Register",
     "⚠️ Risk & Priority", "🏗️ Solution Design", "📋 FRD", "🏃 Agile/Sprint",
-    "🧪 Testing", "📦 Handover", "📊 Overview"
+    "🧪 Testing", "📦 Handover", "📊 Overview", "🧠 Knowledge"
 ])
 
 
@@ -1290,3 +1494,10 @@ with tabs[10]:
     # Raw JSON export
     with st.expander("Raw JSON Output (for debugging)"):
         st.json({"summary": s})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TAB 11: KNOWLEDGE MANAGEMENT
+# ══════════════════════════════════════════════════════════════════════════════
+with tabs[11]:
+    _render_knowledge_admin_tab()
