@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 import os
+import re
 import json
 from datetime import datetime
 from enum import Enum
@@ -17,13 +18,23 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 from openai import OpenAI
 
+# RAG knowledge retrieval (graceful fallback if Qdrant not running)
+try:
+    from knowledge_store import (
+        retrieve_structure_examples, retrieve_domain_knowledge,
+        format_rag_context, check_qdrant_health,
+    )
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SECTION 1: CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 
 LLM_MODEL = "gpt-4o"
-LLM_TEMPERATURE = 0.2
+LLM_TEMPERATURE = 0.0   # Changed from 0.2 → 0.0 for structured agent consistency
 LLM_MAX_TOKENS = 8000
 
 def get_client(api_key: str) -> OpenAI:
@@ -306,6 +317,189 @@ def call_llm_structured(api_key: str, system_prompt: str, user_prompt: str, outp
         temperature=temperature,
         max_tokens=max_tokens,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECTION 3B: RAG RETRIEVAL HELPER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_rag_context(api_key: str, agent_id: str, query_text: str,
+                    domain: str = "life_sciences", subdomains: list[str] = None) -> str:
+    """Retrieve RAG context (structure examples + domain knowledge) for an agent call.
+    Returns a prompt-injectable string. Returns empty string if RAG unavailable.
+    """
+    if not RAG_AVAILABLE:
+        return ""
+
+    try:
+        health = check_qdrant_health()
+        if not health.get("healthy"):
+            return ""
+    except Exception:
+        return ""
+
+    rag_parts = []
+
+    # 1. Structure examples — how this agent should format output
+    try:
+        struct_chunks = retrieve_structure_examples(
+            api_key=api_key, agent_id=agent_id,
+            query_text=query_text, domain=domain, top_k=5,
+        )
+        struct_context = format_rag_context(struct_chunks, "REFERENCE EXAMPLES (match this style and depth)")
+        if struct_context:
+            rag_parts.append(struct_context)
+    except Exception:
+        pass  # Graceful degradation
+
+    # 2. Domain knowledge — what context applies
+    if subdomains is None:
+        subdomains = ["commercial"]
+    try:
+        domain_chunks = retrieve_domain_knowledge(
+            api_key=api_key, subdomains=subdomains,
+            query_text=query_text, top_k=5,
+        )
+        domain_context = format_rag_context(domain_chunks, "DOMAIN KNOWLEDGE (use this context)")
+        if domain_context:
+            rag_parts.append(domain_context)
+    except Exception:
+        pass  # Graceful degradation
+
+    return "\n".join(rag_parts)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SECTION 3C: POST-LLM VALIDATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ID format patterns per artefact type
+_ID_PATTERNS = {
+    "REQ": re.compile(r"^REQ-\d{3,}$"),
+    "OBJ": re.compile(r"^OBJ-\d{3,}$"),
+    "DEP": re.compile(r"^DEP-\d{3,}$"),
+    "ASM": re.compile(r"^ASM-\d{3,}$"),
+    "CON": re.compile(r"^CON-\d{3,}$"),
+    "DE": re.compile(r"^DE-\d{3,}$"),
+    "MOD": re.compile(r"^MOD-\d{3,}$"),
+    "UC": re.compile(r"^UC-\d{3,}$"),
+    "INT": re.compile(r"^INT-\d{3,}$"),
+    "US": re.compile(r"^US-\d{3,}$"),
+    "AC": re.compile(r"^AC-\d{3,}$"),
+    "TC": re.compile(r"^TC-\d{3,}$"),
+    "GXP": re.compile(r"^GXP-\d{3,}$"),
+    "FR": re.compile(r"^FR-\d{3,}$"),
+    "FO-H": re.compile(r"^FO-H-\d{3,}$"),
+    "FO-M": re.compile(r"^FO-M-\d{3,}$"),
+    "FO-L": re.compile(r"^FO-L-\d{3,}$"),
+    "FP": re.compile(r"^FP-\d{3,}$"),
+    "BR": re.compile(r"^BR-\d{3,}$"),
+}
+
+_VALID_PRIORITIES = {"must", "should", "could", "wont"}
+_VALID_RISK_TIERS = {"critical", "high", "medium", "low"}
+_VALID_MOSCOW = {"must", "should", "could", "wont"}
+
+
+def validate_agent_output(agent_id: str, output: dict) -> dict:
+    """Post-LLM validation: check ID formats, required fields, enum values.
+    Returns {valid: bool, warnings: [str], fixes_applied: int}.
+    Does NOT modify the output — only reports issues.
+    """
+    warnings = []
+    fixes = 0
+
+    if not isinstance(output, dict) or output.get("parse_error"):
+        return {"valid": False, "warnings": ["LLM returned invalid JSON"], "fixes_applied": 0}
+
+    # A04: BRD validation
+    if agent_id == "A04":
+        # Check requirement IDs
+        for req in output.get("requirements", []):
+            req_id = req.get("id", "")
+            if not _ID_PATTERNS.get("REQ", re.compile(r".*")).match(req_id):
+                warnings.append(f"Invalid requirement ID format: {req_id}")
+            if not req.get("text"):
+                warnings.append(f"{req_id}: missing requirement text")
+            if not req.get("acceptance_criteria"):
+                warnings.append(f"{req_id}: missing acceptance criteria")
+        # Check objective IDs
+        for obj in output.get("business_objectives", []):
+            obj_id = obj.get("id", "")
+            if not _ID_PATTERNS.get("OBJ", re.compile(r".*")).match(obj_id):
+                warnings.append(f"Invalid objective ID format: {obj_id}")
+        # Check required sections exist
+        for section in ["executive_summary", "business_objectives", "requirements",
+                        "dependencies", "assumptions_log", "constraint_register",
+                        "scope_boundaries", "glossary", "data_dictionary"]:
+            if not output.get(section):
+                warnings.append(f"Missing required BRD section: {section}")
+
+    # A08: Risk scoring validation
+    elif agent_id == "A08":
+        for scored in output.get("scored_requirements", []):
+            moscow = scored.get("moscow_priority", "")
+            if moscow not in _VALID_MOSCOW:
+                warnings.append(f"{scored.get('requirement_id')}: invalid MoSCoW '{moscow}'")
+            tier = scored.get("risk_tier", "")
+            if tier not in _VALID_RISK_TIERS:
+                warnings.append(f"{scored.get('requirement_id')}: invalid risk tier '{tier}'")
+            # Verify weighted total calculation
+            rs = scored.get("risk_scores", {})
+            if rs:
+                expected = (
+                    rs.get("regulatory_exposure", {}).get("score", 0) * 2
+                    + rs.get("integration_complexity", {}).get("score", 0)
+                    + rs.get("stakeholder_dependency", {}).get("score", 0)
+                    + rs.get("implementation_ambiguity", {}).get("score", 0)
+                )
+                if scored.get("weighted_total", 0) != expected:
+                    warnings.append(
+                        f"{scored.get('requirement_id')}: weighted_total mismatch "
+                        f"(got {scored.get('weighted_total')}, expected {expected})"
+                    )
+
+    # A14: Agile validation
+    elif agent_id == "A14":
+        story_ids = set()
+        for us in output.get("user_stories", []):
+            us_id = us.get("id", "")
+            if not _ID_PATTERNS.get("US", re.compile(r".*")).match(us_id):
+                warnings.append(f"Invalid user story ID format: {us_id}")
+            story_ids.add(us_id)
+        for ac in output.get("acceptance_criteria", []):
+            ac_id = ac.get("id", "")
+            if not _ID_PATTERNS.get("AC", re.compile(r".*")).match(ac_id):
+                warnings.append(f"Invalid AC ID format: {ac_id}")
+            if ac.get("story_id") not in story_ids:
+                warnings.append(f"{ac_id}: references non-existent story {ac.get('story_id')}")
+
+    # A15: FRD validation
+    elif agent_id == "A15":
+        if not output.get("segment_1_introduction"):
+            warnings.append("Missing FRD segment 1 (Introduction)")
+        if not output.get("segment_5_use_cases"):
+            warnings.append("Missing FRD segment 5 (Use Cases)")
+        if not output.get("segment_7_detailed_requirements"):
+            warnings.append("Missing FRD segment 7 (Detailed Requirements)")
+        for uc in output.get("segment_5_use_cases", []):
+            if not _ID_PATTERNS.get("UC", re.compile(r".*")).match(uc.get("id", "")):
+                warnings.append(f"Invalid FRD use case ID: {uc.get('id')}")
+
+    # A11: Test validation
+    elif agent_id == "A11":
+        for tc in output.get("test_cases", []):
+            tc_id = tc.get("id", "")
+            if not _ID_PATTERNS.get("TC", re.compile(r".*")).match(tc_id):
+                warnings.append(f"Invalid test case ID format: {tc_id}")
+            if not tc.get("test_steps"):
+                warnings.append(f"{tc_id}: missing test steps")
+
+    return {
+        "valid": len(warnings) == 0,
+        "warnings": warnings,
+        "fixes_applied": fixes,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -654,12 +848,19 @@ def run_a01(api_key, brief_text, project_context=None, corrections=None):
     user_prompt = f"Analyse this brief and produce stakeholder analysis with interview prep.\n\nPROJECT BRIEF:\n{brief_text}\n\nDomain: Life Sciences Commercial. Sub-domain: {sub}"
     if corrections:
         user_prompt += f"\n\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}"
-    return call_llm_structured(
+    rag_context = get_rag_context(api_key, "A01", brief_text, subdomains=[sub])
+    if rag_context:
+        user_prompt += rag_context
+    result = call_llm_structured(
         api_key=api_key,
         system_prompt=A01_SYSTEM,
         user_prompt=user_prompt,
         output_schema=A01_SCHEMA,
     )
+    validation = validate_agent_output("A01", result)
+    if validation["warnings"]:
+        result["_validation_warnings"] = validation["warnings"]
+    return result
 
 
 # ── A04: BRD Structuring (P1 — multi-audience) ──────────────────────────────
@@ -821,13 +1022,20 @@ def run_a04(api_key, brief_text, stakeholder_analysis=None, elicitation_notes=No
     parts.append("5. assumptions_log, constraint_register, scope_boundaries, glossary, data_dictionary, open_questions")
     if corrections:
         parts.append(f"\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}")
-    return call_llm_structured(
+    rag_context = get_rag_context(api_key, "A04", brief_text)
+    if rag_context:
+        parts.append(rag_context)
+    result = call_llm_structured(
         api_key=api_key,
         system_prompt=A04_SYSTEM,
         user_prompt="\n".join(parts),
         output_schema=A04_SCHEMA,
         max_tokens=10000,
     )
+    validation = validate_agent_output("A04", result)
+    if validation["warnings"]:
+        result["_validation_warnings"] = validation["warnings"]
+    return result
 
 
 # ── A05: NFR Library (P2 — auto-suggest) ────────────────────────────────────
@@ -860,6 +1068,9 @@ def run_a05(api_key, requirements, project_context=None, system_type="gxp", corr
     user_prompt = f"Determine applicable NFRs.\n\nREQUIREMENTS:\n{json.dumps(requirements, indent=2)}\n\nNFR LIBRARY ({system_type}):\n{json.dumps(library_suggestions, indent=2)}\n\nDomain: LS Commercial. System type: {system_type}."
     if corrections:
         user_prompt += f"\n\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}"
+    rag_context = get_rag_context(api_key, "A05", json.dumps(requirements[:3], indent=2)[:500])
+    if rag_context:
+        user_prompt += rag_context
     return call_llm_structured(
         api_key=api_key,
         system_prompt=A05_SYSTEM,
@@ -891,6 +1102,9 @@ def run_a06(api_key, requirements, stakeholders=None, nfrs=None, corrections=Non
     user_prompt = f"Build RTM.\n\nREQUIREMENTS:\n{json.dumps(requirements, indent=2)}\n\nSTAKEHOLDERS:\n{json.dumps(stakeholders or [], indent=2)}\n\nNFRs:\n{json.dumps(nfrs or [], indent=2)}"
     if corrections:
         user_prompt += f"\n\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}"
+    rag_context = get_rag_context(api_key, "A06", json.dumps(requirements[:3], indent=2)[:500])
+    if rag_context:
+        user_prompt += rag_context
     return call_llm_structured(
         api_key=api_key,
         system_prompt=A06_SYSTEM,
@@ -936,12 +1150,19 @@ def run_a08(api_key, requirements, project_context=None, nfrs=None, corrections=
     user_prompt = f"Score and prioritise.\n\nREQUIREMENTS:\n{json.dumps(requirements, indent=2)}\n\nNFRs:\n{json.dumps(nfrs or [], indent=2)}\n\nRISK CONFIG:\n{json.dumps(RISK_SCORING_CONFIG, indent=2)}\n\nDomain: LS Commercial — regulatory axis 2x."
     if corrections:
         user_prompt += f"\n\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}"
-    return call_llm_structured(
+    rag_context = get_rag_context(api_key, "A08", json.dumps(requirements[:3], indent=2)[:500])
+    if rag_context:
+        user_prompt += rag_context
+    result = call_llm_structured(
         api_key=api_key,
         system_prompt=A08_SYSTEM,
         user_prompt=user_prompt,
         output_schema=A08_SCHEMA,
     )
+    validation = validate_agent_output("A08", result)
+    if validation["warnings"]:
+        result["_validation_warnings"] = validation["warnings"]
+    return result
 
 
 
@@ -1010,6 +1231,9 @@ def run_a09_asis(api_key, brief_text, requirements=None, corrections=None):
     user_prompt = f"Document the CURRENT STATE (AS-IS) process from this brief.\n\nBRIEF:\n{brief_text}{req_summary}\n\nInclude pain_point nodes for every problem mentioned. Generate gap_summary connecting AS-IS issues to requirements."
     if corrections:
         user_prompt += f"\n\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}"
+    rag_context = get_rag_context(api_key, "A09_ASIS", brief_text[:500])
+    if rag_context:
+        user_prompt += rag_context
     return call_llm_structured(
         api_key=api_key,
         system_prompt=A09_ASIS_SYSTEM,
@@ -1027,6 +1251,9 @@ def run_a09_tobe(api_key, brief_text, requirements=None, corrections=None):
     user_prompt = f"Document the FUTURE STATE (TO-BE) process.\n\nBRIEF:\n{brief_text}{req_text}\n\nShow how the solution addresses the current problems."
     if corrections:
         user_prompt += f"\n\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}"
+    rag_context = get_rag_context(api_key, "A09_TOBE", brief_text[:500])
+    if rag_context:
+        user_prompt += rag_context
     return call_llm_structured(
         api_key=api_key,
         system_prompt=A09_TOBE_SYSTEM,
@@ -1130,6 +1357,9 @@ def run_a09_fsd(api_key, brief_text, requirements=None, stakeholders=None, nfrs=
     parts.append("\nAllocate requirements to solution modules. Include use cases, integration points, and LS regulatory flags.")
     if corrections:
         parts.append(f"\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}")
+    rag_context = get_rag_context(api_key, "A09_FSD", brief_text[:500])
+    if rag_context:
+        parts.append(rag_context)
     return call_llm_structured(
         api_key=api_key,
         system_prompt=A09_FSD_SYSTEM,
@@ -1230,6 +1460,9 @@ def run_a10(api_key, requirements, fsd_modules=None, nfrs=None, risk_scores=None
     parts.append("\nAssess change impact for every requirement. Identify change amplifiers and dependency chains.")
     if corrections:
         parts.append(f"\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}")
+    rag_context = get_rag_context(api_key, "A10", json.dumps(requirements[:3], indent=2)[:500])
+    if rag_context:
+        parts.append(rag_context)
     return call_llm_structured(
         api_key=api_key,
         system_prompt=A10_SYSTEM,
@@ -1366,12 +1599,19 @@ def run_a14(api_key, requirements, risk_scores=None, nfrs=None, fsd_modules=None
     parts.append("\nGenerate user stories with Given/When/Then acceptance criteria. Build product backlog and release plan. Include DoR and DoD checklists.")
     if corrections:
         parts.append(f"\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}")
-    return call_llm_structured(
+    rag_context = get_rag_context(api_key, "A14", json.dumps(requirements[:3], indent=2)[:500])
+    if rag_context:
+        parts.append(rag_context)
+    result = call_llm_structured(
         api_key=api_key,
         system_prompt=A14_SYSTEM,
         user_prompt="\n".join(parts),
         output_schema=A14_SCHEMA,
     )
+    validation = validate_agent_output("A14", result)
+    if validation["warnings"]:
+        result["_validation_warnings"] = validation["warnings"]
+    return result
 
 
 # ── A11: Test Script Agent (Testing phase) ──────────────────────────────────
@@ -1528,12 +1768,19 @@ def run_a11(api_key, requirements, acceptance_criteria=None, user_stories=None, 
     parts.append("\nGenerate functional test cases for BA-led UAT. Include GxP templates for regulated requirements. Ensure complete requirements coverage.")
     if corrections:
         parts.append(f"\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}")
-    return call_llm_structured(
+    rag_context = get_rag_context(api_key, "A11", json.dumps(requirements[:3], indent=2)[:500])
+    if rag_context:
+        parts.append(rag_context)
+    result = call_llm_structured(
         api_key=api_key,
         system_prompt=A11_SYSTEM,
         user_prompt="\n".join(parts),
         output_schema=A11_SCHEMA,
     )
+    validation = validate_agent_output("A11", result)
+    if validation["warnings"]:
+        result["_validation_warnings"] = validation["warnings"]
+    return result
 
 
 # ── A13: Handover + Knowledge Agent (Handover phase) ────────────────────────
@@ -1692,6 +1939,9 @@ def run_a13(api_key, brief_text, requirements=None, stakeholders=None, fsd_modul
     parts.append("\nGenerate all 5 handover documents. Include LS regulatory requirements throughout.")
     if corrections:
         parts.append(f"\nBA CORRECTIONS (incorporate these changes — they take priority over your initial analysis):\n{corrections}")
+    rag_context = get_rag_context(api_key, "A13", brief_text[:500])
+    if rag_context:
+        parts.append(rag_context)
     return call_llm_structured(
         api_key=api_key,
         system_prompt=A13_SYSTEM,
@@ -1900,12 +2150,19 @@ def run_a15_frd(api_key, brief_text, requirements=None, stakeholders=None, nfrs=
     parts.append("\nGenerate all 14 FRD segments following the template structure. Use FR-xxx IDs for functional requirements, UC-xxx for use cases, BR-xxx for business rules, FP-xxx for processes.")
     if corrections:
         parts.append(f"\nBA CORRECTIONS (incorporate these changes — they take priority):\n{corrections}")
-    return call_llm_structured(
+    rag_context = get_rag_context(api_key, "A15", brief_text[:500])
+    if rag_context:
+        parts.append(rag_context)
+    result = call_llm_structured(
         api_key=api_key,
         system_prompt=A15_FRD_SYSTEM,
         user_prompt="\n".join(parts),
         output_schema=A15_FRD_SCHEMA,
     )
+    validation = validate_agent_output("A15", result)
+    if validation["warnings"]:
+        result["_validation_warnings"] = validation["warnings"]
+    return result
 
 
 def run_frd_on_demand(api_key, pipeline_result, log_fn=None):
