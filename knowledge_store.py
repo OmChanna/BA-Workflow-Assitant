@@ -1,7 +1,9 @@
 # ══════════════════════════════════════════════════════════════════════════════
 #  KNOWLEDGE STORE — Qdrant Wrapper for RAG
 #  Two namespaces: structure_examples (agent output style) + domain_knowledge
-#  Used by: ingestion.py, pages/admin.py, backend agents at runtime
+#  Used by: ingestion.py, app.py (admin tab), backend agents at runtime
+#
+#  Supports both local Docker Qdrant and Qdrant Cloud (free tier)
 # ══════════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
@@ -11,6 +13,18 @@ import hashlib
 from datetime import datetime
 from typing import Optional
 from openai import OpenAI
+
+# Try Streamlit secrets first, then env vars, then defaults
+def _get_config(key, default=""):
+    """Read config from Streamlit secrets → env vars → default."""
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.getenv(key, default)
+
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
@@ -21,8 +35,9 @@ from qdrant_client.models import (
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
+QDRANT_HOST = _get_config("QDRANT_HOST", "localhost")
+QDRANT_PORT = int(_get_config("QDRANT_PORT", "6333"))
+QDRANT_API_KEY = _get_config("QDRANT_API_KEY", "")  # For Qdrant Cloud
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIM = 1536  # text-embedding-3-small output dimension
@@ -52,9 +67,8 @@ def get_embedding(api_key: str, text: str) -> list[float]:
 def get_embeddings_batch(api_key: str, texts: list[str]) -> list[list[float]]:
     """Batch embed multiple texts (max 2048 per call by OpenAI)."""
     client = OpenAI(api_key=api_key)
-    # OpenAI batch limit is 2048 inputs
     all_embeddings = []
-    batch_size = 100  # conservative batch to avoid token limits
+    batch_size = 100
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
         response = client.embeddings.create(
@@ -68,8 +82,16 @@ def get_embeddings_batch(api_key: str, texts: list[str]) -> list[list[float]]:
 # ── Qdrant Client Factory ────────────────────────────────────────────────────
 
 def get_qdrant_client() -> QdrantClient:
-    """Create Qdrant client. Connects to local Docker instance."""
-    return QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=30)
+    """Create Qdrant client. Supports local Docker or Qdrant Cloud."""
+    if QDRANT_API_KEY:
+        # Qdrant Cloud — uses HTTPS
+        url = QDRANT_HOST
+        if not url.startswith("http"):
+            url = f"https://{url}"
+        return QdrantClient(url=url, api_key=QDRANT_API_KEY, timeout=30)
+    else:
+        # Local Docker
+        return QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=30)
 
 
 def ensure_collections():
@@ -127,7 +149,6 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_TOKENS,
 
         # Try to break at sentence boundary
         if end < len(text):
-            # Look for sentence end within last 20% of chunk
             search_start = max(start, end - int(char_chunk * 0.2))
             last_period = text.rfind('. ', search_start, end)
             last_newline = text.rfind('\n', search_start, end)
@@ -148,7 +169,6 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_TOKENS,
         start = end - char_overlap
         if start >= len(text):
             break
-        # Safety: ensure forward progress
         if end >= len(text):
             break
 
@@ -182,7 +202,6 @@ def store_chunks(
     doc_id = metadata.get("doc_id", "unknown")
 
     for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-        # Generate a unique point ID from doc_id + chunk index
         point_id_str = f"{doc_id}_{i}"
         point_id_hash = int(hashlib.sha256(point_id_str.encode()).hexdigest()[:15], 16)
 
@@ -201,7 +220,6 @@ def store_chunks(
             payload=payload,
         ))
 
-    # Upsert in batches of 100
     batch_size = 100
     for i in range(0, len(points), batch_size):
         batch = points[i:i + batch_size]
@@ -218,14 +236,7 @@ def retrieve_chunks(
     filters: Optional[dict] = None,
     score_threshold: float = 0.3,
 ) -> list[dict]:
-    """Retrieve top-k chunks by semantic similarity with optional metadata filters.
-
-    Args:
-        filters: dict of {field: value} for exact match filtering.
-                 e.g. {"agent_id": "A04", "domain": "life_sciences"}
-    Returns:
-        list of {text, score, metadata} sorted by relevance.
-    """
+    """Retrieve top-k chunks by semantic similarity with optional metadata filters."""
     query_embedding = get_embedding(api_key, query_text)
 
     qdrant_filter = None
@@ -233,7 +244,6 @@ def retrieve_chunks(
         conditions = []
         for field, value in filters.items():
             if isinstance(value, list):
-                # Match any of the values
                 for v in value:
                     conditions.append(FieldCondition(
                         key=field, match=MatchValue(value=v)
@@ -268,7 +278,6 @@ def delete_document(collection: str, doc_id: str) -> int:
     """Delete all chunks belonging to a document. Returns count of deleted points."""
     client = get_qdrant_client()
 
-    # Count before deletion
     count_before = client.count(
         collection_name=collection,
         count_filter=Filter(must=[
@@ -276,7 +285,6 @@ def delete_document(collection: str, doc_id: str) -> int:
         ]),
     ).count
 
-    # Delete by filter
     client.delete(
         collection_name=collection,
         points_selector=models.FilterSelector(
@@ -290,9 +298,7 @@ def delete_document(collection: str, doc_id: str) -> int:
 
 
 def list_documents(collection: str, filters: Optional[dict] = None) -> list[dict]:
-    """List unique documents in a collection, optionally filtered by metadata.
-    Returns list of {doc_id, filename, agent_id, domain, subdomain, chunk_count, upload_date}.
-    """
+    """List unique documents in a collection, optionally filtered by metadata."""
     client = get_qdrant_client()
 
     qdrant_filter = None
@@ -305,7 +311,6 @@ def list_documents(collection: str, filters: Optional[dict] = None) -> list[dict
         if conditions:
             qdrant_filter = Filter(must=conditions)
 
-    # Scroll through all points, extracting unique doc_ids
     docs = {}
     offset = None
     batch_size = 100
@@ -363,9 +368,7 @@ def retrieve_structure_examples(
     domain: str = "",
     top_k: int = 5,
 ) -> list[dict]:
-    """Retrieve structure/template examples for an agent.
-    Used at agent runtime to inject reference style into prompts.
-    """
+    """Retrieve structure/template examples for an agent."""
     filters = {"agent_id": agent_id}
     if domain:
         filters["domain"] = domain
@@ -385,9 +388,7 @@ def retrieve_domain_knowledge(
     query_text: str,
     top_k: int = 5,
 ) -> list[dict]:
-    """Retrieve domain knowledge chunks filtered by subdomain(s).
-    Used at agent runtime to inject domain context into prompts.
-    """
+    """Retrieve domain knowledge chunks filtered by subdomain(s)."""
     all_results = []
     per_subdomain_k = max(2, top_k // len(subdomains)) if subdomains else top_k
 
@@ -401,7 +402,6 @@ def retrieve_domain_knowledge(
         )
         all_results.extend(results)
 
-    # De-duplicate and sort by score, return top_k
     seen = set()
     unique = []
     for r in sorted(all_results, key=lambda x: x["score"], reverse=True):
@@ -413,9 +413,7 @@ def retrieve_domain_knowledge(
 
 
 def format_rag_context(chunks: list[dict], section_label: str) -> str:
-    """Format retrieved chunks into a prompt-injectable string.
-    Returns empty string if no chunks found.
-    """
+    """Format retrieved chunks into a prompt-injectable string."""
     if not chunks:
         return ""
 
