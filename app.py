@@ -201,6 +201,10 @@ docker run -d -p 6333:6333 -v ./qdrant_data:/qdrant/storage qdrant/qdrant
     
     st.divider()
     
+    # Track already-ingested files to prevent rerun loop
+    if "_ingested_files" not in st.session_state:
+        st.session_state._ingested_files = set()
+    
     # Two-panel layout
     left_panel, right_panel = st.columns(2)
     
@@ -243,15 +247,19 @@ docker run -d -p 6333:6333 -v ./qdrant_data:/qdrant/storage qdrant/qdrant
                         type=["pdf", "docx", "txt", "md", "xlsx", "csv", "json"],
                         key=f"ul_s_{agent_id}",
                         label_visibility="collapsed",
+                        accept_multiple_files=True,
                     )
                     if uploaded and api_key:
-                        with st.spinner(f"Ingesting {uploaded.name}..."):
-                            result = ingest_structure_example(api_key=api_key, uploaded_file=uploaded, agent_id=agent_id)
-                            if result["success"]:
-                                st.success(f"✅ {result['filename']}: {result['chunk_count']} chunks")
-                                st.rerun()
-                            else:
-                                st.error(f"❌ {result['error']}")
+                        for uf in uploaded:
+                            file_key = f"s_{agent_id}_{uf.name}_{uf.size}"
+                            if file_key not in st.session_state._ingested_files:
+                                with st.spinner(f"Ingesting {uf.name}..."):
+                                    result = ingest_structure_example(api_key=api_key, uploaded_file=uf, agent_id=agent_id)
+                                    if result["success"]:
+                                        st.success(f"✅ {result['filename']}: {result['chunk_count']} chunks")
+                                        st.session_state._ingested_files.add(file_key)
+                                    else:
+                                        st.error(f"❌ {result['error']}")
                     elif uploaded and not api_key:
                         st.warning("Enter API key in sidebar first.")
                     st.markdown("---")
@@ -288,15 +296,19 @@ docker run -d -p 6333:6333 -v ./qdrant_data:/qdrant/storage qdrant/qdrant
                         type=["pdf", "docx", "txt", "md", "xlsx", "csv", "json"],
                         key=f"ul_d_{domain_key}_{sub_key}",
                         label_visibility="collapsed",
+                        accept_multiple_files=True,
                     )
                     if uploaded and api_key:
-                        with st.spinner(f"Ingesting {uploaded.name}..."):
-                            result = ingest_domain_knowledge(api_key=api_key, uploaded_file=uploaded, domain=domain_key, subdomain=sub_key)
-                            if result["success"]:
-                                st.success(f"✅ {result['filename']}: {result['chunk_count']} chunks")
-                                st.rerun()
-                            else:
-                                st.error(f"❌ {result['error']}")
+                        for uf in uploaded:
+                            file_key = f"d_{domain_key}_{sub_key}_{uf.name}_{uf.size}"
+                            if file_key not in st.session_state._ingested_files:
+                                with st.spinner(f"Ingesting {uf.name}..."):
+                                    result = ingest_domain_knowledge(api_key=api_key, uploaded_file=uf, domain=domain_key, subdomain=sub_key)
+                                    if result["success"]:
+                                        st.success(f"✅ {result['filename']}: {result['chunk_count']} chunks")
+                                        st.session_state._ingested_files.add(file_key)
+                                    else:
+                                        st.error(f"❌ {result['error']}")
                     elif uploaded and not api_key:
                         st.warning("Enter API key in sidebar first.")
                     st.markdown("---")
