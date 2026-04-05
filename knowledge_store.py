@@ -14,17 +14,6 @@ from datetime import datetime
 from typing import Optional
 from openai import OpenAI
 
-# Try Streamlit secrets first, then env vars, then defaults
-def _get_config(key, default=""):
-    """Read config from Streamlit secrets → env vars → default."""
-    try:
-        import streamlit as st
-        if hasattr(st, "secrets") and key in st.secrets:
-            return st.secrets[key]
-    except Exception:
-        pass
-    return os.getenv(key, default)
-
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
@@ -33,23 +22,46 @@ from qdrant_client.models import (
 )
 
 
-# ── Config ────────────────────────────────────────────────────────────────────
-
-QDRANT_HOST = _get_config("QDRANT_HOST", "localhost")
-QDRANT_PORT = int(_get_config("QDRANT_PORT", "6333"))
-QDRANT_API_KEY = _get_config("QDRANT_API_KEY", "")  # For Qdrant Cloud
+# ── Config (lazy — read at call time, not import time) ────────────────────────
 
 EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIM = 1536  # text-embedding-3-small output dimension
+EMBEDDING_DIM = 1536
 
 COLLECTION_STRUCTURE = "structure_examples"
 COLLECTION_DOMAIN = "domain_knowledge"
 
-# Chunk config
 CHUNK_SIZE_TOKENS = 500
 CHUNK_OVERLAP_TOKENS = 50
-# Approximate chars-per-token ratio for English text
 CHARS_PER_TOKEN = 4
+
+
+def _get_config(key, default=""):
+    """Read config from Streamlit secrets → env vars → default.
+    Called at runtime (not import time) so Streamlit secrets are available.
+    """
+    # Try Streamlit secrets first
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            # Try direct key
+            if key in st.secrets:
+                return str(st.secrets[key])
+            # Try lowercase
+            if key.lower() in st.secrets:
+                return str(st.secrets[key.lower()])
+    except Exception:
+        pass
+    # Fall back to env vars
+    return os.getenv(key, default)
+
+
+def _get_qdrant_config() -> dict:
+    """Get Qdrant connection config at call time."""
+    return {
+        "host": _get_config("QDRANT_HOST", "localhost"),
+        "port": int(_get_config("QDRANT_PORT", "6333")),
+        "api_key": _get_config("QDRANT_API_KEY", ""),
+    }
 
 
 # ── Embedding Client ──────────────────────────────────────────────────────────
@@ -65,7 +77,7 @@ def get_embedding(api_key: str, text: str) -> list[float]:
 
 
 def get_embeddings_batch(api_key: str, texts: list[str]) -> list[list[float]]:
-    """Batch embed multiple texts (max 2048 per call by OpenAI)."""
+    """Batch embed multiple texts."""
     client = OpenAI(api_key=api_key)
     all_embeddings = []
     batch_size = 100
@@ -82,16 +94,20 @@ def get_embeddings_batch(api_key: str, texts: list[str]) -> list[list[float]]:
 # ── Qdrant Client Factory ────────────────────────────────────────────────────
 
 def get_qdrant_client() -> QdrantClient:
-    """Create Qdrant client. Supports local Docker or Qdrant Cloud."""
-    if QDRANT_API_KEY:
-        # Qdrant Cloud — uses HTTPS
-        url = QDRANT_HOST
-        if not url.startswith("http"):
-            url = f"https://{url}"
-        return QdrantClient(url=url, api_key=QDRANT_API_KEY, timeout=30)
+    """Create Qdrant client. Reads config lazily so Streamlit secrets work."""
+    cfg = _get_qdrant_config()
+    
+    if cfg["api_key"]:
+        # Qdrant Cloud — uses HTTPS URL + API key
+        host = cfg["host"]
+        if not host.startswith("http"):
+            host = f"https://{host}"
+        # Strip trailing slashes
+        host = host.rstrip("/")
+        return QdrantClient(url=host, api_key=cfg["api_key"], timeout=30)
     else:
         # Local Docker
-        return QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=30)
+        return QdrantClient(host=cfg["host"], port=cfg["port"], timeout=30)
 
 
 def ensure_collections():
@@ -108,7 +124,6 @@ def ensure_collections():
                     distance=Distance.COSINE,
                 ),
             )
-            # Create payload indexes for fast filtering
             client.create_payload_index(
                 collection_name=coll_name,
                 field_name="agent_id",
@@ -136,7 +151,7 @@ def ensure_collections():
 
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_TOKENS,
                overlap: int = CHUNK_OVERLAP_TOKENS) -> list[dict]:
-    """Split text into overlapping chunks. Returns list of {text, index, char_start, char_end}."""
+    """Split text into overlapping chunks."""
     char_chunk = chunk_size * CHARS_PER_TOKEN
     char_overlap = overlap * CHARS_PER_TOKEN
 
@@ -147,7 +162,6 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE_TOKENS,
     while start < len(text):
         end = start + char_chunk
 
-        # Try to break at sentence boundary
         if end < len(text):
             search_start = max(start, end - int(char_chunk * 0.2))
             last_period = text.rfind('. ', search_start, end)
@@ -190,7 +204,7 @@ def store_chunks(
     chunks: list[dict],
     metadata: dict,
 ) -> int:
-    """Embed and store chunks in Qdrant. Returns count of points stored."""
+    """Embed and store chunks in Qdrant."""
     if not chunks:
         return 0
 
@@ -236,7 +250,7 @@ def retrieve_chunks(
     filters: Optional[dict] = None,
     score_threshold: float = 0.3,
 ) -> list[dict]:
-    """Retrieve top-k chunks by semantic similarity with optional metadata filters."""
+    """Retrieve top-k chunks by semantic similarity."""
     query_embedding = get_embedding(api_key, query_text)
 
     qdrant_filter = None
@@ -275,7 +289,7 @@ def retrieve_chunks(
 
 
 def delete_document(collection: str, doc_id: str) -> int:
-    """Delete all chunks belonging to a document. Returns count of deleted points."""
+    """Delete all chunks belonging to a document."""
     client = get_qdrant_client()
 
     count_before = client.count(
@@ -298,7 +312,7 @@ def delete_document(collection: str, doc_id: str) -> int:
 
 
 def list_documents(collection: str, filters: Optional[dict] = None) -> list[dict]:
-    """List unique documents in a collection, optionally filtered by metadata."""
+    """List unique documents in a collection."""
     client = get_qdrant_client()
 
     qdrant_filter = None
@@ -359,34 +373,24 @@ def get_collection_stats(collection: str) -> dict:
         return {"total_points": 0, "status": f"error: {str(e)}"}
 
 
-# ── Runtime Retrieval Helpers (used by agents) ────────────────────────────────
+# ── Runtime Retrieval Helpers ─────────────────────────────────────────────────
 
 def retrieve_structure_examples(
-    api_key: str,
-    agent_id: str,
-    query_text: str,
-    domain: str = "",
-    top_k: int = 5,
+    api_key: str, agent_id: str, query_text: str,
+    domain: str = "", top_k: int = 5,
 ) -> list[dict]:
     """Retrieve structure/template examples for an agent."""
     filters = {"agent_id": agent_id}
     if domain:
         filters["domain"] = domain
-
     return retrieve_chunks(
-        api_key=api_key,
-        collection=COLLECTION_STRUCTURE,
-        query_text=query_text,
-        top_k=top_k,
-        filters=filters,
+        api_key=api_key, collection=COLLECTION_STRUCTURE,
+        query_text=query_text, top_k=top_k, filters=filters,
     )
 
 
 def retrieve_domain_knowledge(
-    api_key: str,
-    subdomains: list[str],
-    query_text: str,
-    top_k: int = 5,
+    api_key: str, subdomains: list[str], query_text: str, top_k: int = 5,
 ) -> list[dict]:
     """Retrieve domain knowledge chunks filtered by subdomain(s)."""
     all_results = []
@@ -394,10 +398,8 @@ def retrieve_domain_knowledge(
 
     for subdomain in subdomains:
         results = retrieve_chunks(
-            api_key=api_key,
-            collection=COLLECTION_DOMAIN,
-            query_text=query_text,
-            top_k=per_subdomain_k,
+            api_key=api_key, collection=COLLECTION_DOMAIN,
+            query_text=query_text, top_k=per_subdomain_k,
             filters={"subdomain": subdomain},
         )
         all_results.extend(results)
@@ -416,7 +418,6 @@ def format_rag_context(chunks: list[dict], section_label: str) -> str:
     """Format retrieved chunks into a prompt-injectable string."""
     if not chunks:
         return ""
-
     lines = [f"\n{section_label}:"]
     for i, chunk in enumerate(chunks, 1):
         source = chunk.get("metadata", {}).get("filename", "unknown")
@@ -424,14 +425,14 @@ def format_rag_context(chunks: list[dict], section_label: str) -> str:
         lines.append(f"--- Reference {i} (source: {source}, relevance: {score:.2f}) ---")
         lines.append(chunk["text"])
         lines.append("")
-
     return "\n".join(lines)
 
 
-# ── Health Check ──────────────────────────────────────────────────────────────
+# ── Health Check + Debug ──────────────────────────────────────────────────────
 
 def check_qdrant_health() -> dict:
     """Check if Qdrant is reachable and collections exist."""
+    cfg = _get_qdrant_config()
     try:
         client = get_qdrant_client()
         collections = [c.name for c in client.get_collections().collections]
@@ -440,6 +441,11 @@ def check_qdrant_health() -> dict:
             "collections": collections,
             "structure_exists": COLLECTION_STRUCTURE in collections,
             "domain_exists": COLLECTION_DOMAIN in collections,
+            "config": {
+                "host": cfg["host"],
+                "port": cfg["port"],
+                "has_api_key": bool(cfg["api_key"]),
+            },
         }
     except Exception as e:
         return {
@@ -448,4 +454,9 @@ def check_qdrant_health() -> dict:
             "collections": [],
             "structure_exists": False,
             "domain_exists": False,
+            "config": {
+                "host": cfg["host"],
+                "port": cfg["port"],
+                "has_api_key": bool(cfg["api_key"]),
+            },
         }
