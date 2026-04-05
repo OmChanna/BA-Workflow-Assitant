@@ -139,6 +139,20 @@ def _render_knowledge_admin_tab():
         st.divider()
         st.warning("⚠️ Qdrant vector database is not running. Knowledge management requires Qdrant.")
         
+        # Debug: show what config is being read
+        cfg = health.get("config", {})
+        with st.expander("🔧 Connection Debug Info (click to troubleshoot)"):
+            st.markdown(f"**Host being used:** `{cfg.get('host', '?')}`")
+            st.markdown(f"**Port being used:** `{cfg.get('port', '?')}`")
+            st.markdown(f"**API key provided:** `{'Yes' if cfg.get('has_api_key') else 'No'}`")
+            st.markdown(f"**Error:** `{health.get('error', 'unknown')}`")
+            st.markdown("---")
+            st.markdown("**If host shows `localhost`**, your Streamlit secrets are not being read. Check:")
+            st.markdown("1. Go to Streamlit Cloud → your app → **Settings** (bottom right) → **Secrets**")
+            st.markdown("2. Secrets must be in TOML format, exactly like this:")
+            st.code('QDRANT_HOST = "your-url.aws.cloud.qdrant.io"\nQDRANT_PORT = "6333"\nQDRANT_API_KEY = "your-key-here"', language="toml")
+            st.markdown("3. Click **Save** → app will reboot automatically")
+        
         st.markdown("### Setup Options")
         
         st.markdown("""
