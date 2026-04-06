@@ -324,9 +324,11 @@ def call_llm_structured(api_key: str, system_prompt: str, user_prompt: str, outp
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_rag_context(api_key: str, agent_id: str, query_text: str,
-                    domain: str = "life_sciences", subdomains: list[str] = None) -> str:
+                    domain: str = "life_sciences", subdomains: list[str] = None,
+                    max_total_chars: int = 3000) -> str:
     """Retrieve RAG context (structure examples + domain knowledge) for an agent call.
     Returns a prompt-injectable string. Returns empty string if RAG unavailable.
+    max_total_chars caps the total RAG injection to prevent prompt overflow.
     """
     if not RAG_AVAILABLE:
         return ""
@@ -338,19 +340,22 @@ def get_rag_context(api_key: str, agent_id: str, query_text: str,
     except Exception:
         return ""
 
+    # Use short query text for embedding (first 300 chars max)
+    short_query = query_text[:300] if query_text else ""
+    
     rag_parts = []
 
     # 1. Structure examples — how this agent should format output
     try:
         struct_chunks = retrieve_structure_examples(
             api_key=api_key, agent_id=agent_id,
-            query_text=query_text, domain=domain, top_k=5,
+            query_text=short_query, domain=domain, top_k=3,
         )
         struct_context = format_rag_context(struct_chunks, "REFERENCE EXAMPLES (match this style and depth)")
         if struct_context:
             rag_parts.append(struct_context)
     except Exception:
-        pass  # Graceful degradation
+        pass
 
     # 2. Domain knowledge — what context applies
     if subdomains is None:
@@ -358,15 +363,21 @@ def get_rag_context(api_key: str, agent_id: str, query_text: str,
     try:
         domain_chunks = retrieve_domain_knowledge(
             api_key=api_key, subdomains=subdomains,
-            query_text=query_text, top_k=5,
+            query_text=short_query, top_k=3,
         )
         domain_context = format_rag_context(domain_chunks, "DOMAIN KNOWLEDGE (use this context)")
         if domain_context:
             rag_parts.append(domain_context)
     except Exception:
-        pass  # Graceful degradation
+        pass
 
-    return "\n".join(rag_parts)
+    result = "\n".join(rag_parts)
+    
+    # Hard cap to prevent prompt overflow
+    if len(result) > max_total_chars:
+        result = result[:max_total_chars] + "\n[... RAG context truncated to fit prompt limit ...]"
+    
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
