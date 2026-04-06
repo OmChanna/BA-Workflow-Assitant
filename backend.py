@@ -34,7 +34,7 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════════
 
 LLM_MODEL = "gpt-4o"
-LLM_TEMPERATURE = 0.0   # Changed from 0.2 → 0.0 for structured agent consistency
+LLM_TEMPERATURE = 0.2   # Change for structured agent consistency
 LLM_MAX_TOKENS = 8000
 
 def get_client(api_key: str) -> OpenAI:
